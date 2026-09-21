@@ -7,20 +7,21 @@ namespace BackgroundClicker.TestTarget;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
-        // Enforce PerMonitorV2 high-DPI scaling from earliest possible point
+        // DPI awareness source of truth is declared via app.manifest (PerMonitorV2)
+        // and project configuration (<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>).
+        // Best-effort runtime attempt for environments where manifest is not loaded; ignore if already configured.
         try
         {
             User32.SetProcessDpiAwarenessContext(NativeConstants.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
         catch
         {
-            // Fallback for older OS if needed
+            // Ignored: awareness already established by manifest or OS unsupported
         }
 
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         ApplicationConfiguration.Initialize();
-        Application.Run(new TestTargetForm());
+        Application.Run(new TestTargetForm(args));
     }
 }

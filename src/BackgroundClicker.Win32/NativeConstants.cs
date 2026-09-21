@@ -39,6 +39,27 @@ public static class NativeConstants
     public const uint WM_MOUSEWHEEL = 0x020A;
     public const uint WM_CAPTURECHANGED = 0x0215;
 
+    // Mouse Key States (wParam in mouse messages)
+    public const int MK_LBUTTON = 0x0001;
+    public const int MK_RBUTTON = 0x0002;
+    public const int MK_SHIFT = 0x0004;
+    public const int MK_CONTROL = 0x0008;
+    public const int MK_MBUTTON = 0x0010;
+    public const int MK_XBUTTON1 = 0x0020;
+    public const int MK_XBUTTON2 = 0x0040;
+
+    // Hotkey Messages and Modifiers
+    public const uint WM_HOTKEY = 0x0312;
+    public const uint MOD_ALT = 0x0001;
+    public const uint MOD_CONTROL = 0x0002;
+    public const uint MOD_SHIFT = 0x0004;
+    public const uint MOD_WIN = 0x0008;
+    public const uint MOD_NOREPEAT = 0x4000;
+
+    // Virtual Key Codes for Hotkeys
+    public const uint VK_F6 = 0x75;
+    public const uint VK_F7 = 0x76;
+
     // Command Messages
     public const uint WM_COMMAND = 0x0111;
 
@@ -101,4 +122,14 @@ public static class NativeConstants
 
     // DPI Awareness Contexts
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
+
+    // PrintWindow Flags
+    public const uint PW_CLIENTONLY = 0x00000001;
+    public const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+    // SetWindowPos Flags
+    public const uint SWP_NOSIZE = 0x0001;
+    public const uint SWP_NOMOVE = 0x0002;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_NOACTIVATE = 0x0010;
 }

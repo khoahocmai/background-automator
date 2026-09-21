@@ -1,7 +1,12 @@
 using System.Drawing;
 using System.Windows.Forms;
+using BackgroundClicker.App.Hotkeys;
+using BackgroundClicker.Core.Capture;
+using BackgroundClicker.Core.Clicking;
 using BackgroundClicker.Core.Coordinates;
 using BackgroundClicker.Core.Logging;
+using BackgroundClicker.Core.Macro;
+using BackgroundClicker.Core.Runner;
 using BackgroundClicker.Core.Targeting;
 using BackgroundClicker.Win32;
 
@@ -9,21 +14,32 @@ namespace BackgroundClicker.App.Forms;
 
 public sealed class MainForm : Form
 {
+    private readonly IAppLogger _logger;
     private readonly CoordinateService _coordinateService;
     private readonly WindowTargetService _targetService;
-    private readonly IAppLogger _logger;
+    private readonly BackgroundClickerEngine _clicker;
+    private readonly ClickRunner _runner;
+    private readonly GdiWindowCaptureService _captureService;
+    private readonly MacroRunner _macroRunner;
+    private GlobalHotkeyManager? _hotkeyManager;
 
-    // State
+    // Macro Mode State
+    private readonly List<IMacroAction> _macroActions = new();
+
+    // Phase 1 Target State
     private WindowTarget? _currentTarget;
     private WindowTarget? _candidateTarget;
-    private bool _isDraggingCrosshair;
+    private bool _isDraggingCrosshair = false;
 
-    // Controls - Dropdown & Controls
+    // Simple Mode State
+    private readonly List<ClickPoint> _simplePoints = new();
+    private int _cyclesCompleted = 0;
+    private int _totalClicksExecuted = 0;
+
+    // Controls - Inspector
     private ComboBox _cboWindows = null!;
     private Button _btnRefresh = null!;
     private Button _btnCrosshair = null!;
-
-    // Controls - Inspector Labels
     private Label _lblProcess = null!;
     private Label _lblTitle = null!;
     private Label _lblPid = null!;
@@ -38,9 +54,56 @@ public sealed class MainForm : Form
     private Button _btnClear = null!;
     private Button _btnRefreshCoords = null!;
 
-    // Diagnostic Log Box
+    // Controls - Simple Mode
+    private Label _lblSimpleTargetInfo = null!;
+    private NumericUpDown _numX = null!;
+    private NumericUpDown _numY = null!;
+    private RadioButton _radSingle = null!;
+    private RadioButton _radDouble = null!;
+    private Button _btnAddCurrentTarget = null!;
+    private Button _btnAddPoint = null!;
+    private ListView _lvPoints = null!;
+    private Button _btnRemovePoint = null!;
+    private Button _btnMoveUp = null!;
+    private Button _btnMoveDown = null!;
+    private Button _btnClearPoints = null!;
+    private NumericUpDown _numInterval = null!;
+    private RadioButton _radUntilStopped = null!;
+    private RadioButton _radCount = null!;
+    private NumericUpDown _numRepeatCount = null!;
+    private Button _btnStart = null!;
+    private Button _btnStop = null!;
+    private Label _lblRunnerStatus = null!;
+
+    // Controls - Diagnostic Log
     private ListBox _lstDiagLog = null!;
     private Button _btnClearLog = null!;
+
+    // Controls - Macro Mode
+    private NumericUpDown _numMacroX = null!;
+    private NumericUpDown _numMacroY = null!;
+    private Button _btnMacroUseTargetPoint = null!;
+    private Button _btnMacroAddClick = null!;
+    private Button _btnMacroAddDoubleClick = null!;
+    private NumericUpDown _numMacroDelay = null!;
+    private Button _btnMacroAddDelay = null!;
+    private Button _btnMacroPickColor = null!;
+    private NumericUpDown _numMacroTol = null!;
+    private NumericUpDown _numMacroTimeout = null!;
+    private Button _btnMacroAddWaitColor = null!;
+    private ListView _lvMacroActions = null!;
+    private Button _btnMacroMoveUp = null!;
+    private Button _btnMacroMoveDown = null!;
+    private Button _btnMacroDelete = null!;
+    private Button _btnMacroClear = null!;
+    private Button _btnMacroRun = null!;
+    private Button _btnMacroStop = null!;
+    private Label _lblMacroStatus = null!;
+
+    // Bottom Status Strip
+    private Label _lblStatusTarget = null!;
+    private Label _lblStatusRunner = null!;
+    private Label _lblStatusHotkeys = null!;
 
     // Background validation timer
     private readonly System.Windows.Forms.Timer _validationTimer = new();
@@ -50,8 +113,15 @@ public sealed class MainForm : Form
         _logger = new InMemoryLogger(maxEntries: 500);
         _coordinateService = new CoordinateService(_logger);
         _targetService = new WindowTargetService(_coordinateService, _logger);
+        _clicker = new BackgroundClickerEngine(_logger);
+        _runner = new ClickRunner(_clicker, _logger);
+        _captureService = new GdiWindowCaptureService(_logger);
+        _macroRunner = new MacroRunner(_logger);
 
         InitializeComponents();
+        WireRunnerEvents();
+        WireMacroRunnerEvents();
+
         _logger.MessageLogged += OnLogMessageReceived;
 
         _validationTimer.Interval = 500;
@@ -61,29 +131,60 @@ public sealed class MainForm : Form
 
     private void InitializeComponents()
     {
-        Text = "BackgroundClicker — Target Window Inspector (Phase 1)";
-        ClientSize = new Size(720, 680);
-        MinimumSize = new Size(650, 600);
+        Text = "BackgroundClicker — Background Clicker MVP (Phase 3)";
+        ClientSize = new Size(760, 720);
+        MinimumSize = new Size(700, 650);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
-        var pnlMain = new TableLayoutPanel
+        // Main Tab Control
+        var tabControl = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point)
+        };
+
+        var tabTarget = new TabPage("Target Inspector");
+        var tabSimple = new TabPage("Simple Mode");
+        var tabMacro = new TabPage("Macro Mode");
+        var tabLog = new TabPage("Diagnostic Log");
+
+        // Build Tabs
+        BuildTargetTab(tabTarget);
+        BuildSimpleTab(tabSimple);
+        BuildMacroTab(tabMacro);
+        BuildLogTab(tabLog);
+
+        tabControl.TabPages.Add(tabTarget);
+        tabControl.TabPages.Add(tabSimple);
+        tabControl.TabPages.Add(tabMacro);
+        tabControl.TabPages.Add(tabLog);
+
+        // Bottom Status Strip
+        var pnlStatusStrip = BuildStatusStrip();
+
+        Controls.Add(tabControl);
+        Controls.Add(pnlStatusStrip);
+    }
+
+    private void BuildTargetTab(TabPage page)
+    {
+        var pnlTargetLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
-            Padding = new Padding(12)
+            RowCount = 2,
+            Padding = new Padding(10)
         };
-        pnlMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        pnlMain.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        pnlMain.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        pnlTargetLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        pnlTargetLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
         // Group 1: Window Selection & Crosshair
         var grpTargeting = new GroupBox
         {
             Text = "Target Selection",
             Dock = DockStyle.Top,
-            Height = 110,
+            Height = 115,
             Padding = new Padding(10)
         };
 
@@ -97,7 +198,7 @@ public sealed class MainForm : Form
         _cboWindows = new ComboBox
         {
             Location = new Point(12, 44),
-            Size = new Size(420, 25),
+            Size = new Size(460, 25),
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _cboWindows.SelectedIndexChanged += OnWindowDropdownSelectedIndexChanged;
@@ -105,8 +206,8 @@ public sealed class MainForm : Form
         _btnRefresh = new Button
         {
             Text = "Refresh List",
-            Location = new Point(440, 43),
-            Size = new Size(95, 27),
+            Location = new Point(480, 43),
+            Size = new Size(100, 27),
             UseVisualStyleBackColor = true
         };
         _btnRefresh.Click += (s, e) => RefreshWindowList();
@@ -115,7 +216,7 @@ public sealed class MainForm : Form
         {
             Text = "◎ Drag crosshair to target window / control",
             Location = new Point(12, 75),
-            Size = new Size(523, 28),
+            Size = new Size(568, 28),
             Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold, GraphicsUnit.Point),
             BackColor = Color.FromArgb(235, 243, 250),
             UseVisualStyleBackColor = false,
@@ -124,6 +225,7 @@ public sealed class MainForm : Form
         _btnCrosshair.MouseDown += OnCrosshairMouseDown;
         _btnCrosshair.MouseMove += OnCrosshairMouseMove;
         _btnCrosshair.MouseUp += OnCrosshairMouseUp;
+        _btnCrosshair.MouseCaptureChanged += OnCrosshairMouseCaptureChanged;
 
         grpTargeting.Controls.Add(lblSelect);
         grpTargeting.Controls.Add(_cboWindows);
@@ -134,8 +236,7 @@ public sealed class MainForm : Form
         var grpInspector = new GroupBox
         {
             Text = "Target Window & Coordinate Inspector",
-            Dock = DockStyle.Top,
-            Height = 310,
+            Dock = DockStyle.Fill,
             Padding = new Padding(10)
         };
 
@@ -156,7 +257,6 @@ public sealed class MainForm : Form
             tblGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
         }
 
-        // Row 0: Process & Title
         _lblProcess = CreateValueLabel("-");
         _lblTitle = CreateValueLabel("-");
         tblGrid.Controls.Add(CreateHeaderLabel("Process:"), 0, 0);
@@ -164,7 +264,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(CreateHeaderLabel("Title:"), 2, 0);
         tblGrid.Controls.Add(_lblTitle, 3, 0);
 
-        // Row 1: PID & Thread ID
         _lblPid = CreateValueLabel("-");
         _lblThreadId = CreateValueLabel("-");
         tblGrid.Controls.Add(CreateHeaderLabel("PID:"), 0, 1);
@@ -172,7 +271,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(CreateHeaderLabel("Thread ID:"), 2, 1);
         tblGrid.Controls.Add(_lblThreadId, 3, 1);
 
-        // Row 2: Root HWND & Target HWND
         _lblRootHwnd = CreateValueLabel("-", isCode: true);
         _lblTargetHwnd = CreateValueLabel("-", isCode: true);
         tblGrid.Controls.Add(CreateHeaderLabel("Root HWND:"), 0, 2);
@@ -180,7 +278,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(CreateHeaderLabel("Target HWND:"), 2, 2);
         tblGrid.Controls.Add(_lblTargetHwnd, 3, 2);
 
-        // Row 3: Parent HWND & Class
         _lblParentHwnd = CreateValueLabel("-", isCode: true);
         _lblClass = CreateValueLabel("-");
         tblGrid.Controls.Add(CreateHeaderLabel("Parent HWND:"), 0, 3);
@@ -188,7 +285,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(CreateHeaderLabel("Class:"), 2, 3);
         tblGrid.Controls.Add(_lblClass, 3, 3);
 
-        // Row 4: Screen Coordinates & Client Coordinates
         _lblScreenCoords = CreateValueLabel("X: - | Y: -", isCode: true);
         _lblClientCoords = CreateValueLabel("X: - | Y: -", isCode: true);
         tblGrid.Controls.Add(CreateHeaderLabel("Screen X/Y:"), 0, 4);
@@ -196,7 +292,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(CreateHeaderLabel("Client X/Y:"), 2, 4);
         tblGrid.Controls.Add(_lblClientCoords, 3, 4);
 
-        // Row 5: Status
         _lblStatus = new Label
         {
             Text = "No target selected",
@@ -209,7 +304,6 @@ public sealed class MainForm : Form
         tblGrid.Controls.Add(_lblStatus, 1, 5);
         tblGrid.SetColumnSpan(_lblStatus, 3);
 
-        // Row 6: Buttons
         var pnlActions = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -239,19 +333,490 @@ public sealed class MainForm : Form
 
         grpInspector.Controls.Add(tblGrid);
 
-        // Group 3: Diagnostics Log
-        var grpLog = new GroupBox
+        pnlTargetLayout.Controls.Add(grpTargeting, 0, 0);
+        pnlTargetLayout.Controls.Add(grpInspector, 0, 1);
+
+        page.Controls.Add(pnlTargetLayout);
+    }
+
+    private void BuildSimpleTab(TabPage page)
+    {
+        var pnlSimple = new Panel
         {
-            Text = "Diagnostic Log",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12)
+        };
+
+        // Section 1: Target Summary & Point Setup
+        var grpPointSetup = new GroupBox
+        {
+            Text = "Target & Point Setup",
+            Dock = DockStyle.Top,
+            Height = 125,
+            Padding = new Padding(10)
+        };
+
+        _lblSimpleTargetInfo = new Label
+        {
+            Text = "Target: [No target selected in Target Inspector]",
+            Location = new Point(12, 22),
+            Size = new Size(690, 20),
+            Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(40, 70, 110)
+        };
+
+        var lblX = new Label { Text = "X:", Location = new Point(12, 54), AutoSize = true };
+        _numX = new NumericUpDown
+        {
+            Location = new Point(32, 52),
+            Size = new Size(70, 23),
+            Minimum = -32768,
+            Maximum = 32767,
+            Value = 0
+        };
+
+        var lblY = new Label { Text = "Y:", Location = new Point(115, 54), AutoSize = true };
+        _numY = new NumericUpDown
+        {
+            Location = new Point(135, 52),
+            Size = new Size(70, 23),
+            Minimum = -32768,
+            Maximum = 32767,
+            Value = 0
+        };
+
+        _radSingle = new RadioButton
+        {
+            Text = "Single Click",
+            Location = new Point(220, 52),
+            AutoSize = true,
+            Checked = true
+        };
+
+        _radDouble = new RadioButton
+        {
+            Text = "Double Click",
+            Location = new Point(320, 52),
+            AutoSize = true
+        };
+
+        _btnAddCurrentTarget = new Button
+        {
+            Text = "+ Add Target Point (From Inspector)",
+            Location = new Point(12, 85),
+            Size = new Size(240, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnAddCurrentTarget.Click += (s, e) => AddCurrentTargetPoint();
+
+        _btnAddPoint = new Button
+        {
+            Text = "+ Add Custom X/Y Point",
+            Location = new Point(260, 85),
+            Size = new Size(180, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnAddPoint.Click += (s, e) => AddCustomPoint();
+
+        grpPointSetup.Controls.Add(_lblSimpleTargetInfo);
+        grpPointSetup.Controls.Add(lblX);
+        grpPointSetup.Controls.Add(_numX);
+        grpPointSetup.Controls.Add(lblY);
+        grpPointSetup.Controls.Add(_numY);
+        grpPointSetup.Controls.Add(_radSingle);
+        grpPointSetup.Controls.Add(_radDouble);
+        grpPointSetup.Controls.Add(_btnAddCurrentTarget);
+        grpPointSetup.Controls.Add(_btnAddPoint);
+
+        // Section 2: Points List & Ordering
+        var grpPointsList = new GroupBox
+        {
+            Text = "Ordered Click Points",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10)
+        };
+
+        _lvPoints = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true,
+            MultiSelect = false,
+            Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point)
+        };
+        _lvPoints.Columns.Add("#", 40);
+        _lvPoints.Columns.Add("Target HWND", 170);
+        _lvPoints.Columns.Add("Client X", 80);
+        _lvPoints.Columns.Add("Client Y", 80);
+        _lvPoints.Columns.Add("Click Action", 110);
+
+        var pnlPointActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Right,
+            Width = 120,
+            Padding = new Padding(4),
+            FlowDirection = FlowDirection.TopDown
+        };
+
+        _btnRemovePoint = new Button { Text = "Remove", Width = 110, Height = 28, UseVisualStyleBackColor = true };
+        _btnRemovePoint.Click += (s, e) => RemoveSelectedPoint();
+
+        _btnMoveUp = new Button { Text = "Move Up ▲", Width = 110, Height = 28, UseVisualStyleBackColor = true };
+        _btnMoveUp.Click += (s, e) => MoveSelectedPoint(-1);
+
+        _btnMoveDown = new Button { Text = "Move Down ▼", Width = 110, Height = 28, UseVisualStyleBackColor = true };
+        _btnMoveDown.Click += (s, e) => MoveSelectedPoint(1);
+
+        _btnClearPoints = new Button { Text = "Clear All", Width = 110, Height = 28, UseVisualStyleBackColor = true };
+        _btnClearPoints.Click += (s, e) => ClearAllPoints();
+
+        pnlPointActions.Controls.Add(_btnRemovePoint);
+        pnlPointActions.Controls.Add(_btnMoveUp);
+        pnlPointActions.Controls.Add(_btnMoveDown);
+        pnlPointActions.Controls.Add(_btnClearPoints);
+
+        grpPointsList.Controls.Add(_lvPoints);
+        grpPointsList.Controls.Add(pnlPointActions);
+
+        // Section 3: Execution Settings & Controls
+        var grpExecution = new GroupBox
+        {
+            Text = "Execution & Controls",
+            Dock = DockStyle.Bottom,
+            Height = 135,
+            Padding = new Padding(10)
+        };
+
+        var lblInterval = new Label { Text = "Interval:", Location = new Point(12, 26), AutoSize = true };
+        _numInterval = new NumericUpDown
+        {
+            Location = new Point(70, 24),
+            Size = new Size(80, 23),
+            Minimum = 10,
+            Maximum = 60000,
+            Value = 500
+        };
+        var lblMs = new Label { Text = "ms", Location = new Point(155, 26), AutoSize = true };
+
+        var lblRepeat = new Label { Text = "Repeat:", Location = new Point(210, 26), AutoSize = true };
+        _radUntilStopped = new RadioButton
+        {
+            Text = "Until stopped",
+            Location = new Point(265, 24),
+            AutoSize = true,
+            Checked = true
+        };
+        _radCount = new RadioButton
+        {
+            Text = "Count:",
+            Location = new Point(375, 24),
+            AutoSize = true
+        };
+        _numRepeatCount = new NumericUpDown
+        {
+            Location = new Point(440, 24),
+            Size = new Size(80, 23),
+            Minimum = 1,
+            Maximum = 1000000,
+            Value = 10,
+            Enabled = false
+        };
+        _radCount.CheckedChanged += (s, e) => _numRepeatCount.Enabled = _radCount.Checked;
+
+        _btnStart = new Button
+        {
+            Text = "▶ Start (F6)",
+            Location = new Point(12, 60),
+            Size = new Size(130, 32),
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            BackColor = Color.FromArgb(225, 245, 225),
+            UseVisualStyleBackColor = false
+        };
+        _btnStart.Click += (s, e) => StartRunner();
+
+        _btnStop = new Button
+        {
+            Text = "⏹ Stop (F7)",
+            Location = new Point(150, 60),
+            Size = new Size(130, 32),
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            BackColor = Color.FromArgb(255, 230, 230),
+            UseVisualStyleBackColor = false,
+            Enabled = false
+        };
+        _btnStop.Click += (s, e) => StopRunner();
+
+        _lblRunnerStatus = new Label
+        {
+            Text = "State: IDLE | Cycles: 0 | Clicks: 0",
+            Location = new Point(295, 66),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.DimGray
+        };
+
+        grpExecution.Controls.Add(lblInterval);
+        grpExecution.Controls.Add(_numInterval);
+        grpExecution.Controls.Add(lblMs);
+        grpExecution.Controls.Add(lblRepeat);
+        grpExecution.Controls.Add(_radUntilStopped);
+        grpExecution.Controls.Add(_radCount);
+        grpExecution.Controls.Add(_numRepeatCount);
+        grpExecution.Controls.Add(_btnStart);
+        grpExecution.Controls.Add(_btnStop);
+        grpExecution.Controls.Add(_lblRunnerStatus);
+
+        pnlSimple.Controls.Add(grpPointsList);
+        pnlSimple.Controls.Add(grpPointSetup);
+        pnlSimple.Controls.Add(grpExecution);
+
+        page.Controls.Add(pnlSimple);
+    }
+
+    private void BuildMacroTab(TabPage page)
+    {
+        var pnlMacro = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10)
+        };
+
+        // 1. Action Creation Setup GroupBox
+        var grpMacroActionSetup = new GroupBox
+        {
+            Text = "Configure & Add Macro Action",
+            Dock = DockStyle.Top,
+            Height = 135,
+            Padding = new Padding(10)
+        };
+
+        // Row 1: Click / DoubleClick
+        var lblCoord = new Label { Text = "Client X:", Location = new Point(12, 26), AutoSize = true };
+        _numMacroX = new NumericUpDown { Location = new Point(68, 24), Width = 65, Maximum = 9999, Minimum = 0, Value = 50 };
+        var lblCoordY = new Label { Text = "Y:", Location = new Point(140, 26), AutoSize = true };
+        _numMacroY = new NumericUpDown { Location = new Point(158, 24), Width = 65, Maximum = 9999, Minimum = 0, Value = 50 };
+
+        _btnMacroUseTargetPoint = new Button
+        {
+            Text = "🎯 From Target",
+            Location = new Point(230, 22),
+            Size = new Size(110, 27),
+            UseVisualStyleBackColor = true
+        };
+        _btnMacroUseTargetPoint.Click += (s, e) =>
+        {
+            if (_currentTarget != null)
+            {
+                _numMacroX.Value = Math.Clamp(_currentTarget.ClientPoint.ClientX, 0, 9999);
+                _numMacroY.Value = Math.Clamp(_currentTarget.ClientPoint.ClientY, 0, 9999);
+            }
+        };
+
+        _btnMacroAddClick = new Button
+        {
+            Text = "+ Click",
+            Location = new Point(348, 22),
+            Size = new Size(85, 27),
+            UseVisualStyleBackColor = true
+        };
+        _btnMacroAddClick.Click += (s, e) => AddMacroClick();
+
+        _btnMacroAddDoubleClick = new Button
+        {
+            Text = "+ DoubleClick",
+            Location = new Point(440, 22),
+            Size = new Size(100, 27),
+            UseVisualStyleBackColor = true
+        };
+        _btnMacroAddDoubleClick.Click += (s, e) => AddMacroDoubleClick();
+
+        // Row 2: Delay
+        var lblDelay = new Label { Text = "Delay:", Location = new Point(12, 60), AutoSize = true };
+        _numMacroDelay = new NumericUpDown { Location = new Point(68, 58), Width = 75, Maximum = 60000, Minimum = 0, Value = 500 };
+        var lblDelayMs = new Label { Text = "ms", Location = new Point(148, 60), AutoSize = true };
+
+        _btnMacroAddDelay = new Button
+        {
+            Text = "+ Add Delay",
+            Location = new Point(180, 56),
+            Size = new Size(110, 27),
+            UseVisualStyleBackColor = true
+        };
+        _btnMacroAddDelay.Click += (s, e) => AddMacroDelay();
+
+        // Row 3: WaitColor
+        var lblColor = new Label { Text = "WaitColor:", Location = new Point(12, 96), AutoSize = true };
+        _btnMacroPickColor = new Button
+        {
+            Text = "Color",
+            Location = new Point(78, 93),
+            Size = new Size(60, 26),
+            BackColor = Color.FromArgb(0, 255, 0),
+            UseVisualStyleBackColor = false
+        };
+        _btnMacroPickColor.Click += (s, e) =>
+        {
+            using var dlg = new ColorDialog { Color = _btnMacroPickColor.BackColor };
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+            {
+                _btnMacroPickColor.BackColor = dlg.Color;
+            }
+        };
+
+        var lblTol = new Label { Text = "Tol:", Location = new Point(145, 96), AutoSize = true };
+        _numMacroTol = new NumericUpDown { Location = new Point(175, 94), Width = 45, Maximum = 255, Minimum = 0, Value = 5 };
+
+        var lblTimeout = new Label { Text = "Timeout:", Location = new Point(228, 96), AutoSize = true };
+        _numMacroTimeout = new NumericUpDown { Location = new Point(285, 94), Width = 65, Maximum = 60000, Minimum = 100, Value = 5000 };
+        var lblTimeoutMs = new Label { Text = "ms", Location = new Point(355, 96), AutoSize = true };
+
+        _btnMacroAddWaitColor = new Button
+        {
+            Text = "+ Add WaitColor",
+            Location = new Point(385, 93),
+            Size = new Size(125, 27),
+            UseVisualStyleBackColor = true
+        };
+        _btnMacroAddWaitColor.Click += (s, e) => AddMacroWaitColor();
+
+        grpMacroActionSetup.Controls.Add(lblCoord);
+        grpMacroActionSetup.Controls.Add(_numMacroX);
+        grpMacroActionSetup.Controls.Add(lblCoordY);
+        grpMacroActionSetup.Controls.Add(_numMacroY);
+        grpMacroActionSetup.Controls.Add(_btnMacroUseTargetPoint);
+        grpMacroActionSetup.Controls.Add(_btnMacroAddClick);
+        grpMacroActionSetup.Controls.Add(_btnMacroAddDoubleClick);
+
+        grpMacroActionSetup.Controls.Add(lblDelay);
+        grpMacroActionSetup.Controls.Add(_numMacroDelay);
+        grpMacroActionSetup.Controls.Add(lblDelayMs);
+        grpMacroActionSetup.Controls.Add(_btnMacroAddDelay);
+
+        grpMacroActionSetup.Controls.Add(lblColor);
+        grpMacroActionSetup.Controls.Add(_btnMacroPickColor);
+        grpMacroActionSetup.Controls.Add(lblTol);
+        grpMacroActionSetup.Controls.Add(_numMacroTol);
+        grpMacroActionSetup.Controls.Add(lblTimeout);
+        grpMacroActionSetup.Controls.Add(_numMacroTimeout);
+        grpMacroActionSetup.Controls.Add(lblTimeoutMs);
+        grpMacroActionSetup.Controls.Add(_btnMacroAddWaitColor);
+
+        // 2. Bottom Execution Control GroupBox
+        var grpMacroExecution = new GroupBox
+        {
+            Text = "Macro Execution Control",
+            Dock = DockStyle.Bottom,
+            Height = 72,
+            Padding = new Padding(10)
+        };
+
+        _btnMacroRun = new Button
+        {
+            Text = "▶ Run Macro",
+            Location = new Point(14, 24),
+            Size = new Size(125, 34),
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            BackColor = Color.FromArgb(225, 245, 225),
+            UseVisualStyleBackColor = false
+        };
+        _btnMacroRun.Click += (s, e) => StartMacro();
+
+        _btnMacroStop = new Button
+        {
+            Text = "⏹ Stop",
+            Location = new Point(148, 24),
+            Size = new Size(110, 34),
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            BackColor = Color.FromArgb(255, 230, 230),
+            UseVisualStyleBackColor = false,
+            Enabled = false
+        };
+        _btnMacroStop.Click += (s, e) => StopMacro();
+
+        _lblMacroStatus = new Label
+        {
+            Text = "State: IDLE | Actions: 0",
+            Location = new Point(275, 32),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.DimGray
+        };
+
+        grpMacroExecution.Controls.Add(_btnMacroRun);
+        grpMacroExecution.Controls.Add(_btnMacroStop);
+        grpMacroExecution.Controls.Add(_lblMacroStatus);
+
+        // 3. Middle Configured Macro Actions Sequence GroupBox
+        var grpMacroList = new GroupBox
+        {
+            Text = "Configured Macro Action Sequence",
             Dock = DockStyle.Fill,
             Padding = new Padding(8)
+        };
+
+        var pnlListButtons = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 36,
+            Padding = new Padding(2)
+        };
+
+        _btnMacroMoveUp = new Button { Text = "▲ Move Up", Dock = DockStyle.Left, Width = 95, UseVisualStyleBackColor = true };
+        _btnMacroMoveUp.Click += (s, e) => MoveMacroAction(-1);
+
+        _btnMacroMoveDown = new Button { Text = "▼ Move Down", Dock = DockStyle.Left, Width = 95, UseVisualStyleBackColor = true };
+        _btnMacroMoveDown.Click += (s, e) => MoveMacroAction(1);
+
+        _btnMacroDelete = new Button { Text = "❌ Delete", Dock = DockStyle.Left, Width = 85, UseVisualStyleBackColor = true };
+        _btnMacroDelete.Click += (s, e) => DeleteMacroAction();
+
+        _btnMacroClear = new Button { Text = "🗑 Clear All", Dock = DockStyle.Right, Width = 95, UseVisualStyleBackColor = true };
+        _btnMacroClear.Click += (s, e) => ClearMacroActions();
+
+        pnlListButtons.Controls.Add(_btnMacroClear);
+        pnlListButtons.Controls.Add(_btnMacroDelete);
+        pnlListButtons.Controls.Add(_btnMacroMoveDown);
+        pnlListButtons.Controls.Add(_btnMacroMoveUp);
+
+        _lvMacroActions = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true,
+            MultiSelect = false,
+            Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point)
+        };
+        _lvMacroActions.Columns.Add("#", 38);
+        _lvMacroActions.Columns.Add("Action", 95);
+        _lvMacroActions.Columns.Add("Configuration / Target Parameters", 430);
+        _lvMacroActions.Columns.Add("Status", 100);
+
+        grpMacroList.Controls.Add(_lvMacroActions);
+        grpMacroList.Controls.Add(pnlListButtons);
+
+        pnlMacro.Controls.Add(grpMacroList);
+        pnlMacro.Controls.Add(grpMacroActionSetup);
+        pnlMacro.Controls.Add(grpMacroExecution);
+
+        page.Controls.Add(pnlMacro);
+    }
+
+    private void BuildLogTab(TabPage page)
+    {
+        var pnlLog = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10)
         };
 
         var pnlLogBar = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 30
+            Height = 35
         };
+
         _btnClearLog = new Button
         {
             Text = "Clear Log",
@@ -269,25 +834,132 @@ public sealed class MainForm : Form
         _lstDiagLog = new ListBox
         {
             Dock = DockStyle.Fill,
-            Font = new Font("Consolas", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
+            Font = new Font("Consolas", 8.8F, FontStyle.Regular, GraphicsUnit.Point),
             IntegralHeight = false
         };
 
-        grpLog.Controls.Add(_lstDiagLog);
-        grpLog.Controls.Add(pnlLogBar);
+        pnlLog.Controls.Add(_lstDiagLog);
+        pnlLog.Controls.Add(pnlLogBar);
 
-        pnlMain.Controls.Add(grpTargeting, 0, 0);
-        pnlMain.Controls.Add(grpInspector, 0, 1);
-        pnlMain.Controls.Add(grpLog, 0, 2);
+        page.Controls.Add(pnlLog);
+    }
 
-        Controls.Add(pnlMain);
+    private Panel BuildStatusStrip()
+    {
+        var pnlStatus = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 28,
+            BackColor = Color.FromArgb(240, 240, 240),
+            Padding = new Padding(8, 4, 8, 4)
+        };
+
+        _lblStatusTarget = new Label
+        {
+            Text = "Target: None",
+            Dock = DockStyle.Left,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(50, 50, 50)
+        };
+
+        _lblStatusHotkeys = new Label
+        {
+            Text = "Hotkeys: F6 (Start/Stop) | F7 (Emergency Stop)",
+            Dock = DockStyle.Right,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleRight,
+            Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(70, 70, 70)
+        };
+
+        _lblStatusRunner = new Label
+        {
+            Text = "Runner: IDLE",
+            Dock = DockStyle.Right,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleRight,
+            Padding = new Padding(0, 0, 20, 0),
+            Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.DimGray
+        };
+
+        pnlStatus.Controls.Add(_lblStatusTarget);
+        pnlStatus.Controls.Add(_lblStatusRunner);
+        pnlStatus.Controls.Add(_lblStatusHotkeys);
+
+        return pnlStatus;
+    }
+
+    private void WireRunnerEvents()
+    {
+        _runner.StateChanged += (s, state) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() => OnRunnerStateChanged(state));
+            }
+        };
+
+        _runner.PointExecuted += (s, point) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() => OnPointExecuted(point));
+            }
+        };
+
+        _runner.CycleCompleted += (s, cycle) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() => OnCycleCompleted(cycle));
+            }
+        };
+
+        _runner.ErrorOccurred += (s, error) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() => OnRunnerErrorOccurred(error));
+            }
+        };
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // Register Global Hotkeys
+        _hotkeyManager = new GlobalHotkeyManager(
+            Handle,
+            onStartStop: ToggleRunner,
+            onEmergencyStop: EmergencyStopRunner,
+            logger: _logger);
+
+        _hotkeyManager.RegisterHotkeys();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == (int)NativeConstants.WM_HOTKEY)
+        {
+            int hotkeyId = m.WParam.ToInt32();
+            if (_hotkeyManager?.ProcessHotkey(hotkeyId) == true)
+            {
+                return;
+            }
+        }
+
+        base.WndProc(ref m);
     }
 
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
         RefreshWindowList();
-        _logger.Info("BackgroundClicker inspector initialized");
+        _logger.Info("BackgroundClicker initialized (Phase 2)");
     }
 
     private static Label CreateHeaderLabel(string text) => new()
@@ -385,7 +1057,6 @@ public sealed class MainForm : Form
         }
         else
         {
-            // Point is outside or over our own application
             _lblScreenCoords.Text = $"X: {pt.X} | Y: {pt.Y}";
             _lblStatus.Text = "Hovering over BackgroundClicker (selection ignored)";
             _lblStatus.ForeColor = Color.Gray;
@@ -420,10 +1091,39 @@ public sealed class MainForm : Form
         }
     }
 
+    private void OnCrosshairMouseCaptureChanged(object? sender, EventArgs e)
+    {
+        if (_isDraggingCrosshair && !_btnCrosshair.Capture)
+        {
+            _isDraggingCrosshair = false;
+            Cursor = Cursors.Default;
+            if (_candidateTarget != null)
+            {
+                CommitTarget(_candidateTarget);
+            }
+            else if (_currentTarget != null)
+            {
+                DisplayTargetInfo(_currentTarget, statusText: "Target valid", statusColor: Color.Green);
+            }
+            else
+            {
+                _lblStatus.Text = "Crosshair released: No target selected";
+                _lblStatus.ForeColor = Color.DimGray;
+            }
+        }
+    }
+
     private void CommitTarget(WindowTarget target)
     {
         _currentTarget = target;
         DisplayTargetInfo(target, statusText: "Target valid", statusColor: Color.ForestGreen);
+
+        // Synchronize target with Simple Mode UI
+        _lblSimpleTargetInfo.Text = $"Target: {target.ProcessName} | HWND: {HwndFormatter.Format(target.TargetHwnd)} | Local: ({target.ClientPoint.ClientX}, {target.ClientPoint.ClientY})";
+        _lblStatusTarget.Text = $"Target: {target.ProcessName} ({HwndFormatter.FormatShort(target.TargetHwnd)})";
+
+        _numX.Value = Math.Clamp(target.ClientPoint.ClientX, (int)_numX.Minimum, (int)_numX.Maximum);
+        _numY.Value = Math.Clamp(target.ClientPoint.ClientY, (int)_numY.Minimum, (int)_numY.Maximum);
 
         // Synchronize dropdown if candidate exists in it
         for (int i = 0; i < _cboWindows.Items.Count; i++)
@@ -480,6 +1180,8 @@ public sealed class MainForm : Form
         _lblStatus.ForeColor = Color.DimGray;
 
         _cboWindows.SelectedIndex = -1;
+        _lblSimpleTargetInfo.Text = "Target: [No target selected in Target Inspector]";
+        _lblStatusTarget.Text = "Target: None";
         _logger.Info("Target cleared by user");
     }
 
@@ -501,7 +1203,6 @@ public sealed class MainForm : Form
         {
             _currentTarget = refreshed;
             DisplayTargetInfo(refreshed, statusText: "Coordinates refreshed (Target valid)", statusColor: Color.ForestGreen);
-            _logger.Debug($"Coordinates refreshed: Screen ({refreshed.ScreenPoint.X}, {refreshed.ScreenPoint.Y}) -> Client ({refreshed.ClientPoint.ClientX}, {refreshed.ClientPoint.ClientY})");
         }
     }
 
@@ -510,26 +1211,424 @@ public sealed class MainForm : Form
         if (_isDraggingCrosshair || _currentTarget == null)
             return;
 
-        // Check if selected target still exists
         if (!_currentTarget.IsWindowValid())
         {
             _lblStatus.Text = "Target unavailable (window closed)";
             _lblStatus.ForeColor = Color.Crimson;
-            _logger.Warning($"Target window {HwndFormatter.Format(_currentTarget.TargetHwnd)} is no longer valid");
+            _lblSimpleTargetInfo.Text = "Target: [Window closed or invalid]";
+            _lblStatusTarget.Text = "Target: Closed";
         }
         else
         {
-            // Verify and refresh coordinates in case target window moved or resized
             var refreshed = _targetService.RefreshTarget(_currentTarget);
             if (refreshed != null)
             {
                 _currentTarget = refreshed;
                 _lblScreenCoords.Text = $"X: {refreshed.ScreenPoint.X} | Y: {refreshed.ScreenPoint.Y}";
                 _lblClientCoords.Text = $"X: {refreshed.ClientPoint.ClientX} | Y: {refreshed.ClientPoint.ClientY}";
-                _lblStatus.Text = "Target valid";
-                _lblStatus.ForeColor = Color.ForestGreen;
             }
         }
+    }
+
+    // --- Simple Mode Handlers ---
+
+    private void AddCurrentTargetPoint()
+    {
+        if (_currentTarget == null || !_currentTarget.IsWindowValid())
+        {
+            MessageBox.Show(this, "Please inspect and lock onto a valid target window/control first.", "No Valid Target", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var clickType = _radDouble.Checked ? ClickType.Double : ClickType.Single;
+        var point = new ClickPoint(_currentTarget.TargetHwnd, _currentTarget.ClientPoint.ClientX, _currentTarget.ClientPoint.ClientY, clickType);
+        _simplePoints.Add(point);
+        RefreshPointsList();
+        _logger.Info($"Added point #{_simplePoints.Count}: HWND {HwndFormatter.FormatShort(point.Hwnd)} at ({point.ClientX}, {point.ClientY}) [{point.ClickType}]");
+    }
+
+    private void AddCustomPoint()
+    {
+        if (_currentTarget == null || !_currentTarget.IsWindowValid())
+        {
+            MessageBox.Show(this, "Please select a target window/control first so the coordinates attach to a valid HWND.", "No Valid Target", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var clickType = _radDouble.Checked ? ClickType.Double : ClickType.Single;
+        var point = new ClickPoint(_currentTarget.TargetHwnd, (int)_numX.Value, (int)_numY.Value, clickType);
+        _simplePoints.Add(point);
+        RefreshPointsList();
+        _logger.Info($"Added custom point #{_simplePoints.Count}: HWND {HwndFormatter.FormatShort(point.Hwnd)} at ({point.ClientX}, {point.ClientY}) [{point.ClickType}]");
+    }
+
+    private void RemoveSelectedPoint()
+    {
+        if (_lvPoints.SelectedIndices.Count > 0)
+        {
+            int index = _lvPoints.SelectedIndices[0];
+            _simplePoints.RemoveAt(index);
+            RefreshPointsList();
+            if (index < _simplePoints.Count)
+            {
+                _lvPoints.Items[index].Selected = true;
+            }
+            else if (_simplePoints.Count > 0)
+            {
+                _lvPoints.Items[_simplePoints.Count - 1].Selected = true;
+            }
+        }
+    }
+
+    private void MoveSelectedPoint(int direction)
+    {
+        if (_lvPoints.SelectedIndices.Count > 0)
+        {
+            int index = _lvPoints.SelectedIndices[0];
+            int newIndex = index + direction;
+            if (newIndex >= 0 && newIndex < _simplePoints.Count)
+            {
+                var item = _simplePoints[index];
+                _simplePoints.RemoveAt(index);
+                _simplePoints.Insert(newIndex, item);
+                RefreshPointsList();
+                _lvPoints.Items[newIndex].Selected = true;
+            }
+        }
+    }
+
+    private void ClearAllPoints()
+    {
+        _simplePoints.Clear();
+        RefreshPointsList();
+    }
+
+    private void RefreshPointsList()
+    {
+        _lvPoints.BeginUpdate();
+        _lvPoints.Items.Clear();
+
+        for (int i = 0; i < _simplePoints.Count; i++)
+        {
+            var p = _simplePoints[i];
+            var lvi = new ListViewItem((i + 1).ToString());
+            lvi.SubItems.Add(HwndFormatter.Format(p.Hwnd));
+            lvi.SubItems.Add(p.ClientX.ToString());
+            lvi.SubItems.Add(p.ClientY.ToString());
+            lvi.SubItems.Add(p.ClickType.ToString());
+            _lvPoints.Items.Add(lvi);
+        }
+
+        _lvPoints.EndUpdate();
+    }
+
+    private void ToggleRunner()
+    {
+        if (_runner.State == RunnerState.Running)
+        {
+            StopRunner();
+        }
+        else if (_runner.State == RunnerState.Idle)
+        {
+            StartRunner();
+        }
+    }
+
+    private void EmergencyStopRunner()
+    {
+        _logger.Warning("Emergency Stop triggered via F7!");
+        StopRunner();
+        StopMacro();
+    }
+
+    private void StartMacro()
+    {
+        if (_macroRunner.State != MacroRunnerState.Idle)
+            return;
+
+        if (_currentTarget == null || !_currentTarget.IsWindowValid())
+        {
+            MessageBox.Show(this, "Please select a valid target window in Target Inspector before running a macro.", "No Target Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (_macroActions.Count == 0)
+        {
+            MessageBox.Show(this, "Please add at least one macro action to the sequence.", "No Actions Configured", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget.TargetHwnd);
+        _ = _macroRunner.RunAsync(_macroActions.ToList(), context);
+    }
+
+    private void StopMacro()
+    {
+        if (_macroRunner.State == MacroRunnerState.Running)
+        {
+            _macroRunner.Stop();
+        }
+    }
+
+    private void AddMacroClick()
+    {
+        _macroActions.Add(new ClickAction((int)_numMacroX.Value, (int)_numMacroY.Value));
+        RefreshMacroList();
+        _logger.Info($"Added Macro Click at ({(int)_numMacroX.Value}, {(int)_numMacroY.Value})");
+    }
+
+    private void AddMacroDoubleClick()
+    {
+        _macroActions.Add(new DoubleClickAction((int)_numMacroX.Value, (int)_numMacroY.Value));
+        RefreshMacroList();
+        _logger.Info($"Added Macro DoubleClick at ({(int)_numMacroX.Value}, {(int)_numMacroY.Value})");
+    }
+
+    private void AddMacroDelay()
+    {
+        int ms = (int)_numMacroDelay.Value;
+        _macroActions.Add(new DelayAction(ms));
+        RefreshMacroList();
+        _logger.Info($"Added Macro Delay {ms}ms");
+    }
+
+    private void AddMacroWaitColor()
+    {
+        int x = (int)_numMacroX.Value;
+        int y = (int)_numMacroY.Value;
+        Color col = _btnMacroPickColor.BackColor;
+        int tol = (int)_numMacroTol.Value;
+        int timeoutMs = (int)_numMacroTimeout.Value;
+
+        _macroActions.Add(new WaitColorAction(x, y, col, tol, TimeSpan.FromMilliseconds(timeoutMs)));
+        RefreshMacroList();
+        _logger.Info($"Added Macro WaitColor at ({x}, {y}) RGB({col.R},{col.G},{col.B}) tol={tol} timeout={timeoutMs}ms");
+    }
+
+    private void MoveMacroAction(int direction)
+    {
+        if (_lvMacroActions.SelectedIndices.Count > 0)
+        {
+            int index = _lvMacroActions.SelectedIndices[0];
+            int newIndex = index + direction;
+            if (newIndex >= 0 && newIndex < _macroActions.Count)
+            {
+                var item = _macroActions[index];
+                _macroActions.RemoveAt(index);
+                _macroActions.Insert(newIndex, item);
+                RefreshMacroList();
+                _lvMacroActions.Items[newIndex].Selected = true;
+            }
+        }
+    }
+
+    private void DeleteMacroAction()
+    {
+        if (_lvMacroActions.SelectedIndices.Count > 0)
+        {
+            int index = _lvMacroActions.SelectedIndices[0];
+            _macroActions.RemoveAt(index);
+            RefreshMacroList();
+            if (index < _macroActions.Count)
+            {
+                _lvMacroActions.Items[index].Selected = true;
+            }
+            else if (_macroActions.Count > 0)
+            {
+                _lvMacroActions.Items[_macroActions.Count - 1].Selected = true;
+            }
+        }
+    }
+
+    private void ClearMacroActions()
+    {
+        _macroActions.Clear();
+        RefreshMacroList();
+    }
+
+    private void RefreshMacroList()
+    {
+        _lvMacroActions.BeginUpdate();
+        _lvMacroActions.Items.Clear();
+
+        for (int i = 0; i < _macroActions.Count; i++)
+        {
+            var action = _macroActions[i];
+            var lvi = new ListViewItem((i + 1).ToString());
+            lvi.SubItems.Add(action.Name);
+            lvi.SubItems.Add(action.DisplayString);
+            lvi.SubItems.Add("Ready");
+            _lvMacroActions.Items.Add(lvi);
+        }
+
+        _lvMacroActions.EndUpdate();
+        _lblMacroStatus.Text = $"State: {(_macroRunner.State == MacroRunnerState.Running ? "RUNNING" : "IDLE")} | Actions: {_macroActions.Count}";
+    }
+
+    private void WireMacroRunnerEvents()
+    {
+        _macroRunner.StateChanged += state =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() =>
+                {
+                    switch (state)
+                    {
+                        case MacroRunnerState.Running:
+                            _btnMacroRun.Enabled = false;
+                            _btnMacroStop.Enabled = true;
+                            _lblMacroStatus.Text = "State: RUNNING...";
+                            _lblMacroStatus.ForeColor = Color.ForestGreen;
+                            break;
+                        case MacroRunnerState.Stopping:
+                            _btnMacroRun.Enabled = false;
+                            _btnMacroStop.Enabled = false;
+                            _lblMacroStatus.Text = "State: STOPPING...";
+                            _lblMacroStatus.ForeColor = Color.DarkOrange;
+                            break;
+                        case MacroRunnerState.Idle:
+                            _btnMacroRun.Enabled = true;
+                            _btnMacroStop.Enabled = false;
+                            _lblMacroStatus.Text = $"State: IDLE | Actions: {_macroActions.Count}";
+                            _lblMacroStatus.ForeColor = Color.DimGray;
+                            break;
+                    }
+                });
+            }
+        };
+
+        _macroRunner.ActionStarting += (index, action) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() =>
+                {
+                    _lblMacroStatus.Text = $"State: RUNNING | Action [{index + 1}/{_macroActions.Count}]: {action.Name}";
+                    if (index >= 0 && index < _lvMacroActions.Items.Count)
+                    {
+                        _lvMacroActions.Items[index].SubItems[3].Text = "Running...";
+                        _lvMacroActions.Items[index].Selected = true;
+                        _lvMacroActions.Items[index].EnsureVisible();
+                    }
+                });
+            }
+        };
+
+        _macroRunner.ActionCompleted += (index, action, result) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() =>
+                {
+                    if (index >= 0 && index < _lvMacroActions.Items.Count)
+                    {
+                        _lvMacroActions.Items[index].SubItems[3].Text = result.Status.ToString();
+                        _lvMacroActions.Items[index].ForeColor = result.IsSuccess ? Color.DarkGreen : Color.Crimson;
+                    }
+                });
+            }
+        };
+
+        _macroRunner.ExecutionCompleted += result =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                BeginInvoke(() =>
+                {
+                    _lblMacroStatus.Text = $"Finished: {result.FinalStatus} ({result.CompletedActionsCount}/{result.TotalActionsCount} in {result.ElapsedTime.TotalMilliseconds:F0}ms)";
+                    _lblMacroStatus.ForeColor = result.IsSuccess ? Color.ForestGreen : Color.Crimson;
+                });
+            }
+        };
+    }
+
+    private void StartRunner()
+    {
+        if (_runner.State != RunnerState.Idle)
+            return;
+
+        if (_simplePoints.Count == 0)
+        {
+            MessageBox.Show(this, "Please add at least one click point before starting.", "No Points Configured", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var config = new ClickRunnerConfig
+        {
+            Points = _simplePoints.ToList(),
+            IntervalMilliseconds = (int)_numInterval.Value,
+            RepeatMode = _radCount.Checked ? RepeatMode.Count : RepeatMode.UntilStopped,
+            RepeatCount = (int)_numRepeatCount.Value
+        };
+
+        _cyclesCompleted = 0;
+        _totalClicksExecuted = 0;
+
+        bool started = _runner.Start(config);
+        if (!started)
+        {
+            _logger.Warning("Runner failed to start (already active).");
+        }
+    }
+
+    private void StopRunner()
+    {
+        if (_runner.State == RunnerState.Running)
+        {
+            _runner.Stop();
+        }
+    }
+
+    private void OnRunnerStateChanged(RunnerState state)
+    {
+        switch (state)
+        {
+            case RunnerState.Running:
+                _btnStart.Enabled = false;
+                _btnStop.Enabled = true;
+                _lblRunnerStatus.Text = $"State: RUNNING | Cycles: {_cyclesCompleted} | Clicks: {_totalClicksExecuted}";
+                _lblRunnerStatus.ForeColor = Color.ForestGreen;
+                _lblStatusRunner.Text = "Runner: RUNNING";
+                _lblStatusRunner.ForeColor = Color.ForestGreen;
+                break;
+            case RunnerState.Stopping:
+                _btnStart.Enabled = false;
+                _btnStop.Enabled = false;
+                _lblRunnerStatus.Text = "State: STOPPING...";
+                _lblRunnerStatus.ForeColor = Color.DarkOrange;
+                _lblStatusRunner.Text = "Runner: STOPPING";
+                _lblStatusRunner.ForeColor = Color.DarkOrange;
+                break;
+            case RunnerState.Idle:
+                _btnStart.Enabled = true;
+                _btnStop.Enabled = false;
+                _lblRunnerStatus.Text = $"State: IDLE | Cycles: {_cyclesCompleted} | Clicks: {_totalClicksExecuted}";
+                _lblRunnerStatus.ForeColor = Color.DimGray;
+                _lblStatusRunner.Text = "Runner: IDLE";
+                _lblStatusRunner.ForeColor = Color.DimGray;
+                break;
+        }
+    }
+
+    private void OnPointExecuted(ClickPoint point)
+    {
+        _totalClicksExecuted++;
+        _lblRunnerStatus.Text = $"State: RUNNING | Cycles: {_cyclesCompleted} | Clicks: {_totalClicksExecuted}";
+    }
+
+    private void OnCycleCompleted(int cycle)
+    {
+        _cyclesCompleted = cycle;
+        _lblRunnerStatus.Text = $"State: RUNNING | Cycles: {_cyclesCompleted} | Clicks: {_totalClicksExecuted}";
+    }
+
+    private void OnRunnerErrorOccurred(string error)
+    {
+        _lblRunnerStatus.Text = $"State: IDLE (Error: {error})";
+        _lblRunnerStatus.ForeColor = Color.Crimson;
+        _lblStatus.Text = error;
+        _lblStatus.ForeColor = Color.Crimson;
     }
 
     private void OnLogMessageReceived(LogEntry entry)
@@ -552,6 +1651,9 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            _hotkeyManager?.Dispose();
+            _runner.Dispose();
+            _macroRunner.Dispose();
             _validationTimer.Stop();
             _validationTimer.Dispose();
             _logger.MessageLogged -= OnLogMessageReceived;
@@ -559,3 +1661,4 @@ public sealed class MainForm : Form
         base.Dispose(disposing);
     }
 }
+

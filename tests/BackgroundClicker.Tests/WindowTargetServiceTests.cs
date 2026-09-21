@@ -106,6 +106,62 @@ public class WindowTargetServiceTests
     }
 
     [Fact]
+    public void ResolveTargetFromScreenPoint_DeepestChildResolution_FourLevelHierarchyWithOffsets()
+    {
+        // Hierarchy: Form -> Panel A -> Panel B -> Button where every level has deliberate non-zero offset
+        using var form = new Form
+        {
+            Text = "Four Level Test Form",
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(120, 140),
+            Size = new Size(600, 500),
+            ShowInTaskbar = false
+        };
+
+        using var panelA = new Panel
+        {
+            Location = new Point(35, 45),
+            Size = new Size(400, 350),
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        using var panelB = new Panel
+        {
+            Location = new Point(50, 60),
+            Size = new Size(250, 200),
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        using var button = new Button
+        {
+            Text = "Deep Target Button",
+            Location = new Point(25, 30),
+            Size = new Size(130, 45)
+        };
+
+        panelB.Controls.Add(button);
+        panelA.Controls.Add(panelB);
+        form.Controls.Add(panelA);
+
+        form.Show();
+        Application.DoEvents();
+
+        // Target point on button at local (15, 20)
+        Point buttonScreenPt = _coordinateService.ClientToScreen(new TargetPoint(button.Handle, 15, 20));
+        var targetOnButton = _targetService.ResolveTargetFromScreenPoint(buttonScreenPt, allowCurrentProcess: true);
+
+        Assert.NotNull(targetOnButton);
+        Assert.Equal(form.Handle, targetOnButton.RootHwnd);
+        Assert.Equal(button.Handle, targetOnButton.TargetHwnd);
+        Assert.Equal(panelB.Handle, targetOnButton.ParentHwnd);
+        Assert.Equal(15, targetOnButton.ClientPoint.ClientX);
+        Assert.Equal(20, targetOnButton.ClientPoint.ClientY);
+        Assert.Equal(button.Handle, targetOnButton.ClientPoint.Hwnd);
+
+        form.Close();
+    }
+
+    [Fact]
     public void RefreshTarget_WhenWindowMoved_UpdatesScreenCoordinatesAccurately()
     {
         using var form = new Form

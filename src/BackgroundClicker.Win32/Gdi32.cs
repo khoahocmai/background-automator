@@ -28,4 +28,7 @@ public static class Gdi32
 
     [DllImport(Gdi32Dll, SetLastError = true)]
     public static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+    [DllImport(Gdi32Dll, SetLastError = true)]
+    public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int nWidth, int nHeight);
 }

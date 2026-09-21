@@ -1,20 +1,26 @@
 # BackgroundClicker
 
-BackgroundClicker is a Windows desktop utility designed for targeting, inspecting, and automating interactions with background and foreground application windows.
+BackgroundClicker is a Windows desktop utility designed for targeting, inspecting, and automating interactions with background and foreground application windows without moving the physical mouse cursor.
 
-## Phase 1 Scope: Foundation + Target Window Inspector + Deterministic TestTarget
+**Development roadmap:** [docs/PHASES.md](docs/PHASES.md)
 
-Phase 1 establishes the core foundation for window enumeration, mouse crosshair targeting, hierarchical HWND resolution (root vs deepest child control), coordinate translations (screen ↔ client), and DPI scaling awareness.
+## Current Status: Phase 3 (Macro Engine + Window Capture + WaitColor) — COMPLETE
 
-### Key Capabilities in Phase 1
-* **.NET 8 WinForms App**: Modern x64 Windows desktop application configured with `PerMonitorV2` DPI scaling.
-* **Top-Level Window Enumeration**: Discovers usable desktop windows with safe filtering against invisible, cloaked, or internal process windows.
-* **Drag-to-Target Crosshair**: Interactive mouse capture (`SetCapture`/`ReleaseCapture`) inspecting candidate windows and child controls in real time under the cursor.
-* **Hierarchical HWND Resolution**: Distinguishes between the top-level root window (`RootHwnd`), container (`ParentHwnd`), and the deepest useful child control (`TargetHwnd`).
-* **Coordinate Conversion**: Accurately maps screen coordinates to target-relative client coordinates (`ScreenToClient`) and validates round-trips (`ClientToScreen`).
-* **Move/Resize Resilience**: Automatically refreshes coordinates when a target window is relocated or resized without losing client offsets.
-* **Target Lifecycle Safety**: Gracefully detects closed or invalidated targets via `IsWindow` checks without application crashes.
-* **Deterministic Test Target**: Includes `BackgroundClicker.TestTarget`, a dedicated test bench with nested controls (form, panel, button, textbox), click counters, coordinate monitors, and a bounded raw Windows message logger (`WM_MOUSEMOVE`, `WM_LBUTTONDOWN`, `WM_LBUTTONUP`, `WM_KEYDOWN`, `WM_CHAR`).
+Phase 1 established the foundation for window enumeration, mouse crosshair targeting, hierarchical HWND resolution, and coordinate translations.
+Phase 2 delivered background mouse click dispatching via Win32 `PostMessage`, multi-point sequencing, asynchronous runner loops, and global hotkeys.
+Phase 3 delivers a robust macro action pipeline, background window client-area capture via `PrintWindow`, and color matching with configurable tolerance and timeout.
+
+### Key Capabilities in Phase 3
+* **Macro Engine**: Sequential execution of composable `IMacroAction` steps with `MacroRunner`.
+* **Action Types**:
+  * `ClickAction`: Background single click at client coordinate.
+  * `DoubleClickAction`: Background double click at client coordinate.
+  * `DelayAction`: Non-blocking, cancellation-aware asynchronous pause.
+  * `WaitColorAction`: Polls window client area until target RGB color is observed within tolerance.
+* **Window Capture Service**: Background client-area capture using Win32 `PrintWindow` with `PW_CLIENTONLY` and strict GDI lifecycle resource management (DC, Bitmap, and Object cleanup).
+* **Coordinate Invariant**: Both window capture pixel queries and background click targets strictly share the identical client coordinate system where `(0, 0)` is the top-left of the target client area.
+* **Interactive Macro UI**: Visual sequence builder supporting action reordering (Move Up/Down), addition, deletion, and real-time execution monitoring with UI thread marshalling.
+* **Deterministic Test Bench**: Extended `BackgroundClicker.TestTarget` with dedicated color panels, color change buttons, and automated delayed color transitions for regression testing.
 
 ---
 
@@ -145,11 +151,9 @@ Targeting and background window interaction depend fundamentally on the input ar
 
 ---
 
-## Non-Goals in Phase 1 (Scheduled for Later Phases)
+## Future Roadmap (Scheduled for Phase 4)
 
-* Auto-click loop & `PostMessage` scheduler (Phase 2)
-* Cancellation tokens & background runner engine (Phase 2)
-* Global hotkeys (F6/F7) (Phase 2)
-* Macro recording & action sequencing (Phase 3)
-* Pixel color matching & `PrintWindow` capture (Phase 3)
-* Profile persistence & configuration storage (Phase 4)
+* Profile persistence & configuration storage (JSON / registry)
+* UIPI / privilege mismatch detection and optional restart-as-admin UX
+* Target re-resolution across application restarts (process/title/class matching)
+* Self-contained single-file portable release (`win-x64`)

@@ -13,13 +13,19 @@ public sealed class TestTargetForm : Form, IMessageFilter
     private readonly object _logLock = new();
     private const int MaxLogEntries = 1000;
 
+    private readonly string? _logFilePath;
+    private readonly bool _initialLogMouseMove;
+
     // UI Controls
     private Label _lblProcessInfo = null!;
     private GroupBox _grpControls = null!;
     private Panel _testPanel = null!;
     private Button _testButton = null!;
     private Label _panelLabel = null!;
-    private Label _lblClickCounter = null!;
+    private Label _lblSingleClicks = null!;
+    private Label _lblDoubleClicks = null!;
+    private Label _lblLastClick = null!;
+    private Label _lblLastMessage = null!;
     private Button _btnResetCounter = null!;
     private Label _lblCoordinates = null!;
     private TextBox _txtKeyLogger = null!;
@@ -28,11 +34,61 @@ public sealed class TestTargetForm : Form, IMessageFilter
     private Label _lblLogStats = null!;
     private ListView _lvMessages = null!;
 
-    private int _clickCount = 0;
+    // Color Test Panel Controls
+    private Panel _colorPanel = null!;
+    private Label _lblColorInfo = null!;
+    private Button _btnSetRed = null!;
+    private Button _btnSetGreen = null!;
+    private Button _btnSetBlue = null!;
+    private Button _btnDelayGreen = null!;
 
-    public TestTargetForm()
+    private Color? _initialColor;
+    private int _delayedChangeMs;
+    private Color? _delayedColor;
+
+    private int _singleClickCount = 0;
+    private int _doubleClickCount = 0;
+    private int _lastClickX = -1;
+    private int _lastClickY = -1;
+    private string _lastMessage = "None";
+
+    public TestTargetForm(string[]? args = null)
     {
+        if (args != null)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (string.Equals(args[i], "--log-file", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    _logFilePath = args[i + 1];
+                    i++;
+                }
+                else if (string.Equals(args[i], "--log-mouse-move", StringComparison.OrdinalIgnoreCase))
+                {
+                    _initialLogMouseMove = true;
+                }
+                else if (string.Equals(args[i], "--initial-color", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    _initialColor = ParseColor(args[++i]);
+                }
+                else if (string.Equals(args[i], "--change-color-after", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                {
+                    string spec = args[++i];
+                    int colon = spec.IndexOf(':');
+                    if (colon > 0 && int.TryParse(spec.Substring(0, colon), out int ms))
+                    {
+                        _delayedChangeMs = ms;
+                        _delayedColor = ParseColor(spec.Substring(colon + 1));
+                    }
+                }
+            }
+        }
+
         InitializeComponents();
+        if (_initialLogMouseMove && _chkLogMouseMove != null)
+        {
+            _chkLogMouseMove.Checked = true;
+        }
         Application.AddMessageFilter(this);
     }
 
@@ -60,7 +116,7 @@ public sealed class TestTargetForm : Form, IMessageFilter
         {
             Text = "Target Interactive Controls",
             Dock = DockStyle.Top,
-            Height = 220,
+            Height = 255,
             Padding = new Padding(12)
         };
 
@@ -94,26 +150,57 @@ public sealed class TestTargetForm : Form, IMessageFilter
         _testPanel.Controls.Add(_testButton);
         _testPanel.Controls.Add(_panelLabel);
 
-        // Click counter label
-        _lblClickCounter = new Label
+        // Click counter labels
+        _lblSingleClicks = new Label
         {
-            Text = "Clicks: 0",
-            Location = new Point(380, 32),
+            Text = "Single Clicks: 0",
+            Location = new Point(370, 24),
             AutoSize = true,
-            Font = new Font("Segoe UI", 12F, FontStyle.Bold, GraphicsUnit.Point),
+            Font = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
             ForeColor = Color.FromArgb(16, 124, 65)
+        };
+
+        _lblDoubleClicks = new Label
+        {
+            Text = "Double Clicks: 0",
+            Location = new Point(370, 46),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(0, 100, 180)
+        };
+
+        _lblLastClick = new Label
+        {
+            Text = "Last Click: X: - | Y: -",
+            Location = new Point(370, 68),
+            AutoSize = true,
+            Font = new Font("Consolas", 8.8F, FontStyle.Regular, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(60, 60, 60)
+        };
+
+        _lblLastMessage = new Label
+        {
+            Text = "Last Msg: None",
+            Location = new Point(370, 88),
+            AutoSize = true,
+            Font = new Font("Consolas", 8.8F, FontStyle.Regular, GraphicsUnit.Point),
+            ForeColor = Color.FromArgb(60, 60, 60)
         };
 
         _btnResetCounter = new Button
         {
-            Text = "Reset Counter",
-            Location = new Point(380, 68),
-            Size = new Size(130, 32),
+            Text = "Reset Counters",
+            Location = new Point(370, 112),
+            Size = new Size(130, 26),
             UseVisualStyleBackColor = true
         };
         _btnResetCounter.Click += (s, e) =>
         {
-            _clickCount = 0;
+            _singleClickCount = 0;
+            _doubleClickCount = 0;
+            _lastClickX = -1;
+            _lastClickY = -1;
+            _lastMessage = "Reset";
             UpdateClickDisplay();
         };
 
@@ -121,10 +208,64 @@ public sealed class TestTargetForm : Form, IMessageFilter
         _lblCoordinates = new Label
         {
             Text = "Cursor: (Screen: 0, 0 | Form Client: 0, 0 | Button Client: 0, 0)",
-            Location = new Point(16, 150),
+            Location = new Point(16, 142),
             AutoSize = true,
             Font = new Font("Consolas", 9F, FontStyle.Regular, GraphicsUnit.Point)
         };
+
+        // Solid Color Test Panel & Controls
+        _colorPanel = new Panel
+        {
+            Name = "ColorPanel",
+            Location = new Point(16, 170),
+            Size = new Size(110, 50),
+            BackColor = _initialColor ?? Color.FromArgb(255, 0, 0),
+            BorderStyle = BorderStyle.FixedSingle
+        };
+
+        _lblColorInfo = new Label
+        {
+            Text = $"Color: RGB({_colorPanel.BackColor.R}, {_colorPanel.BackColor.G}, {_colorPanel.BackColor.B})",
+            Location = new Point(135, 170),
+            AutoSize = true,
+            Font = new Font("Consolas", 8.8F, FontStyle.Bold, GraphicsUnit.Point)
+        };
+
+        _btnSetRed = new Button
+        {
+            Text = "Set Red",
+            Location = new Point(135, 192),
+            Size = new Size(72, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnSetRed.Click += (s, e) => SetPanelColor(Color.FromArgb(255, 0, 0));
+
+        _btnSetGreen = new Button
+        {
+            Text = "Set Green",
+            Location = new Point(212, 192),
+            Size = new Size(75, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnSetGreen.Click += (s, e) => SetPanelColor(Color.FromArgb(0, 255, 0));
+
+        _btnSetBlue = new Button
+        {
+            Text = "Set Blue",
+            Location = new Point(292, 192),
+            Size = new Size(72, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnSetBlue.Click += (s, e) => SetPanelColor(Color.FromArgb(0, 0, 255));
+
+        _btnDelayGreen = new Button
+        {
+            Text = "Delay Green 400ms",
+            Location = new Point(369, 192),
+            Size = new Size(130, 28),
+            UseVisualStyleBackColor = true
+        };
+        _btnDelayGreen.Click += (s, e) => ChangeColorAfter(Color.FromArgb(0, 255, 0), 400);
 
         // Keyboard logger input
         var lblKeyPrompt = new Label
@@ -146,9 +287,18 @@ public sealed class TestTargetForm : Form, IMessageFilter
         _txtKeyLogger.KeyPress += OnKeyLoggerKeyPress;
 
         _grpControls.Controls.Add(_testPanel);
-        _grpControls.Controls.Add(_lblClickCounter);
+        _grpControls.Controls.Add(_lblSingleClicks);
+        _grpControls.Controls.Add(_lblDoubleClicks);
+        _grpControls.Controls.Add(_lblLastClick);
+        _grpControls.Controls.Add(_lblLastMessage);
         _grpControls.Controls.Add(_btnResetCounter);
         _grpControls.Controls.Add(_lblCoordinates);
+        _grpControls.Controls.Add(_colorPanel);
+        _grpControls.Controls.Add(_lblColorInfo);
+        _grpControls.Controls.Add(_btnSetRed);
+        _grpControls.Controls.Add(_btnSetGreen);
+        _grpControls.Controls.Add(_btnSetBlue);
+        _grpControls.Controls.Add(_btnDelayGreen);
         _grpControls.Controls.Add(lblKeyPrompt);
         _grpControls.Controls.Add(_txtKeyLogger);
 
@@ -244,22 +394,61 @@ public sealed class TestTargetForm : Form, IMessageFilter
         UpdateHeaderInfo();
     }
 
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (_delayedChangeMs > 0 && _delayedColor.HasValue)
+        {
+            ChangeColorAfter(_delayedColor.Value, _delayedChangeMs);
+        }
+    }
+
+    public void SetPanelColor(Color color)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => SetPanelColor(color));
+            return;
+        }
+
+        _colorPanel.BackColor = color;
+        _lblColorInfo.Text = $"Color: RGB({color.R}, {color.G}, {color.B})";
+    }
+
+    public void ChangeColorAfter(Color color, int delayMs)
+    {
+        Task.Run(async () =>
+        {
+            await Task.Delay(delayMs);
+            SetPanelColor(color);
+        });
+    }
+
     private void UpdateHeaderInfo()
     {
         uint pid = Kernel32.GetCurrentProcessId();
         uint tid = Kernel32.GetCurrentThreadId();
-        _lblProcessInfo.Text = $"Process: BackgroundClicker.TestTarget.exe | PID: {pid} | Thread: {tid} | Form HWND: {HwndFormatter.Format(Handle)} | Button HWND: {HwndFormatter.Format(_testButton.Handle)} | Panel HWND: {HwndFormatter.Format(_testPanel.Handle)}";
+        _lblProcessInfo.Text = $"Process: BackgroundClicker.TestTarget.exe | PID: {pid} | Thread: {tid} | Form HWND: {HwndFormatter.Format(Handle)} | Button HWND: {HwndFormatter.Format(_testButton.Handle)} | Panel HWND: {HwndFormatter.Format(_testPanel.Handle)} | Color HWND: {HwndFormatter.Format(_colorPanel.Handle)}";
     }
 
     private void OnTargetButtonClick(object? sender, EventArgs e)
     {
-        _clickCount++;
+        _singleClickCount++;
         UpdateClickDisplay();
     }
 
     private void UpdateClickDisplay()
     {
-        _lblClickCounter.Text = $"Clicks: {_clickCount}";
+        if (InvokeRequired)
+        {
+            BeginInvoke(UpdateClickDisplay);
+            return;
+        }
+
+        _lblSingleClicks.Text = $"Single Clicks: {_singleClickCount}";
+        _lblDoubleClicks.Text = $"Double Clicks: {_doubleClickCount}";
+        _lblLastClick.Text = _lastClickX >= 0 ? $"Last Click: X: {_lastClickX} | Y: {_lastClickY}" : "Last Click: X: - | Y: -";
+        _lblLastMessage.Text = $"Last Msg: {_lastMessage}";
     }
 
     private void OnCoordTimerTick(object? sender, EventArgs e)
@@ -307,6 +496,30 @@ public sealed class TestTargetForm : Form, IMessageFilter
 
         if (isTargetMsg)
         {
+            if (_testButton.IsHandleCreated && m.HWnd == _testButton.Handle)
+            {
+                if (msg == NativeConstants.WM_LBUTTONDOWN)
+                {
+                    _lastClickX = MouseMessageHelper.GetMouseX(m.LParam);
+                    _lastClickY = MouseMessageHelper.GetMouseY(m.LParam);
+                    _lastMessage = "WM_LBUTTONDOWN";
+                    UpdateClickDisplay();
+                }
+                else if (msg == NativeConstants.WM_LBUTTONDBLCLK)
+                {
+                    _doubleClickCount++;
+                    _lastClickX = MouseMessageHelper.GetMouseX(m.LParam);
+                    _lastClickY = MouseMessageHelper.GetMouseY(m.LParam);
+                    _lastMessage = "WM_LBUTTONDBLCLK";
+                    UpdateClickDisplay();
+                }
+                else if (msg == NativeConstants.WM_LBUTTONUP)
+                {
+                    _lastMessage = "WM_LBUTTONUP";
+                    UpdateClickDisplay();
+                }
+            }
+
             LogRawMessage(m);
         }
 
@@ -360,6 +573,22 @@ public sealed class TestTargetForm : Form, IMessageFilter
             _messageLog.Add(entry);
         }
 
+        if (!string.IsNullOrEmpty(_logFilePath))
+        {
+            try
+            {
+                string line = $"{entry.Timestamp:O}\t{entry.MessageName}\t{entry.Hwnd.ToInt64():X16}\t{entry.TargetName}\t{entry.WParam}\t{entry.LParam}\t{entry.Decoded}\t{entry.ThreadId}{Environment.NewLine}";
+                using var fs = new FileStream(_logFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                using var writer = new StreamWriter(fs);
+                writer.Write(line);
+                writer.Flush();
+            }
+            catch
+            {
+                // Best effort log file output for test automation
+            }
+        }
+
         if (IsHandleCreated && !IsDisposed)
         {
             BeginInvoke(RefreshVirtualList);
@@ -411,7 +640,44 @@ public sealed class TestTargetForm : Form, IMessageFilter
         if (_testPanel.IsHandleCreated && hwnd == _testPanel.Handle) return "Panel";
         if (_txtKeyLogger.IsHandleCreated && hwnd == _txtKeyLogger.Handle) return "TextBox";
         if (_lvMessages.IsHandleCreated && hwnd == _lvMessages.Handle) return "ListView";
+        if (_colorPanel.IsHandleCreated && hwnd == _colorPanel.Handle) return "ColorPanel";
+        if (_btnSetRed.IsHandleCreated && hwnd == _btnSetRed.Handle) return "BtnSetRed";
+        if (_btnSetGreen.IsHandleCreated && hwnd == _btnSetGreen.Handle) return "BtnSetGreen";
+        if (_btnSetBlue.IsHandleCreated && hwnd == _btnSetBlue.Handle) return "BtnSetBlue";
+        if (_btnDelayGreen.IsHandleCreated && hwnd == _btnDelayGreen.Handle) return "BtnDelayGreen";
         return "[Child Control]";
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_APP_SET_COLOR = 0x8000 + 101;
+        if (m.Msg == WM_APP_SET_COLOR)
+        {
+            int rgb = (int)m.LParam.ToInt64();
+            int r = (rgb >> 16) & 0xFF;
+            int g = (rgb >> 8) & 0xFF;
+            int b = rgb & 0xFF;
+            SetPanelColor(Color.FromArgb(r, g, b));
+            m.Result = (IntPtr)1;
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    private static Color ParseColor(string str)
+    {
+        if (string.Equals(str, "red", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(255, 0, 0);
+        if (string.Equals(str, "green", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(0, 255, 0);
+        if (string.Equals(str, "blue", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(0, 0, 255);
+        if (string.Equals(str, "white", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(255, 255, 255);
+        if (string.Equals(str, "black", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(0, 0, 0);
+        if (string.Equals(str, "yellow", StringComparison.OrdinalIgnoreCase)) return Color.FromArgb(255, 255, 0);
+        if (str.StartsWith("#") && str.Length == 7)
+        {
+            int rgb = Convert.ToInt32(str[1..], 16);
+            return Color.FromArgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+        }
+        return Color.FromName(str);
     }
 
     private static string GetMessageName(uint msg) => msg switch
