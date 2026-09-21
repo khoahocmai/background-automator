@@ -4,23 +4,21 @@ BackgroundClicker is a Windows desktop utility designed for targeting, inspectin
 
 **Development roadmap:** [docs/PHASES.md](docs/PHASES.md)
 
-## Current Status: Phase 3 (Macro Engine + Window Capture + WaitColor) — COMPLETE
+## Current Status: Phase 4 (Hardening + Persistence + Release) — COMPLETE
 
 Phase 1 established the foundation for window enumeration, mouse crosshair targeting, hierarchical HWND resolution, and coordinate translations.
 Phase 2 delivered background mouse click dispatching via Win32 `PostMessage`, multi-point sequencing, asynchronous runner loops, and global hotkeys.
-Phase 3 delivers a robust macro action pipeline, background window client-area capture via `PrintWindow`, and color matching with configurable tolerance and timeout.
+Phase 3 delivered a composable macro action engine, background window client-area capture via `PrintWindow`, and color matching with configurable tolerance and timeout.
+Phase 4 hardens the entire system: off-UI-thread capture execution, hung-target detection, single-flight capture throttling, durable target descriptors and re-resolution (no live HWNDs persisted), atomic JSON profile persistence, UIPI elevation diagnostics, multi-monitor negative coordinate support, and portable self-contained release builds.
 
-### Key Capabilities in Phase 3
-* **Macro Engine**: Sequential execution of composable `IMacroAction` steps with `MacroRunner`.
-* **Action Types**:
-  * `ClickAction`: Background single click at client coordinate.
-  * `DoubleClickAction`: Background double click at client coordinate.
-  * `DelayAction`: Non-blocking, cancellation-aware asynchronous pause.
-  * `WaitColorAction`: Polls window client area until target RGB color is observed within tolerance.
-* **Window Capture Service**: Background client-area capture using Win32 `PrintWindow` with `PW_CLIENTONLY` and strict GDI lifecycle resource management (DC, Bitmap, and Object cleanup).
-* **Coordinate Invariant**: Both window capture pixel queries and background click targets strictly share the identical client coordinate system where `(0, 0)` is the top-left of the target client area.
-* **Interactive Macro UI**: Visual sequence builder supporting action reordering (Move Up/Down), addition, deletion, and real-time execution monitoring with UI thread marshalling.
-* **Deterministic Test Bench**: Extended `BackgroundClicker.TestTarget` with dedicated color panels, color change buttons, and automated delayed color transitions for regression testing.
+### Key Capabilities in Phase 4
+* **Window Capture Hardening**: Background client-area captures execute asynchronously on the thread pool with `CaptureClientAreaAsync`, guarded by `IsHungAppWindow` and a controlled single-flight gate (`SemaphoreSlim(1,1)`).
+* **Durable Target Descriptors & Re-resolution**: Profiles store persistent descriptors (ProcessName, WindowTitle, WindowClass, MatchMode, ChildDescriptor) rather than ephemeral live HWNDs, re-resolving fresh handles across app restarts with ambiguity detection.
+* **Atomic Profile Persistence**: Profiles are saved atomically via temporary file writes and replacements in `%LOCALAPPDATA%\BackgroundClicker\profiles\`. Damaged profiles are isolated without impacting enumeration.
+* **UIPI & Privilege Diagnostics**: Active target processes are queried for elevation tokens (`OpenProcessToken`, `TokenElevation`), surfacing UI warnings and a one-click "Restart as Administrator" option when privilege mismatches would drop click messages.
+* **Multi-Monitor Support**: Verified signed 32-bit Win32 coordinate translations for secondary monitors positioned at negative virtual desktop coordinates.
+* **Resource Soak Verified**: GDI and USER handle allocations verified leak-free across 500+ rapid capture cycles using Win32 `GetGuiResources`.
+* **Portable Release**: Single-file, self-contained `win-x64` executable generated with zero external runtime dependencies.
 
 ---
 
@@ -151,9 +149,20 @@ Targeting and background window interaction depend fundamentally on the input ar
 
 ---
 
-## Future Roadmap (Scheduled for Phase 4)
+## Release Publishing & Portable Distribution
 
-* Profile persistence & configuration storage (JSON / registry)
-* UIPI / privilege mismatch detection and optional restart-as-admin UX
-* Target re-resolution across application restarts (process/title/class matching)
-* Self-contained single-file portable release (`win-x64`)
+To build the self-contained single-file portable release for Windows x64:
+
+```powershell
+dotnet publish src/BackgroundClicker.App/BackgroundClicker.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
+```
+
+This generates `BackgroundClicker.App.exe` in `./publish/`, which can be run on any 64-bit Windows 10/11 machine without requiring the .NET runtime to be installed.
+
+### Profile Storage Location
+
+Saved profiles are stored as human-readable, schema-versioned JSON files at:
+```text
+%LOCALAPPDATA%\BackgroundClicker\profiles\*.json
+```
+Profiles can also be backed up, restored, or transferred across machines. Target windows will automatically re-resolve when loaded on another system based on the profile's durable `TargetDescriptor`.

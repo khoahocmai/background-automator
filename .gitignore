@@ -482,7 +482,7 @@ $RECYCLE.BIN/
 *.swp
 
 # BackgroundClicker runtime profiles, logs, and publish outputs
-profiles/
-publish/
-publish-output/
+/profiles/
+/publish/
+/publish-output/
 *.tsv

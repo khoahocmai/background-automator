@@ -23,7 +23,7 @@ public class WindowTargetService
     /// Enumerates usable top-level windows, safely handling race conditions (e.g. processes exiting).
     /// Filters out BackgroundClicker's own process, invisible windows, and empty system windows.
     /// </summary>
-    public IReadOnlyList<WindowTargetCandidate> EnumerateTopLevelWindows(IntPtr ignoreRootHwnd = default)
+    public virtual IReadOnlyList<WindowTargetCandidate> EnumerateTopLevelWindows(IntPtr ignoreRootHwnd = default)
     {
         var candidates = new List<WindowTargetCandidate>();
         uint currentProcessId = Kernel32.GetCurrentProcessId();

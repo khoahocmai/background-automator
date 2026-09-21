@@ -11,9 +11,11 @@ namespace BackgroundClicker.Core.Capture;
 /// GetDC -> CreateCompatibleDC -> CreateCompatibleBitmap -> SelectObject -> PrintWindow
 /// -> Restore SelectObject -> DeleteObject -> DeleteDC -> ReleaseDC.
 /// </summary>
-public sealed class GdiWindowCaptureService : IWindowCaptureService
+public sealed class GdiWindowCaptureService : IWindowCaptureService, IDisposable
 {
     private readonly IAppLogger? _logger;
+    private readonly SemaphoreSlim _captureGate = new(1, 1);
+    private bool _disposed;
 
     public GdiWindowCaptureService(IAppLogger? logger = null)
     {
@@ -26,6 +28,12 @@ public sealed class GdiWindowCaptureService : IWindowCaptureService
         if (hWnd == IntPtr.Zero || !User32.IsWindow(hWnd))
         {
             _logger?.Warning($"Capture failed: Invalid or destroyed HWND {HwndFormatter.Format(hWnd)}");
+            return null;
+        }
+
+        if (User32.IsHungAppWindow(hWnd))
+        {
+            _logger?.Warning($"Capture aborted: Target HWND {HwndFormatter.Format(hWnd)} is hung (unresponsive to Windows messages).");
             return null;
         }
 
@@ -112,6 +120,41 @@ public sealed class GdiWindowCaptureService : IWindowCaptureService
         finally
         {
             User32.ReleaseDC(hWnd, hdcWindow);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<WindowCapture?> CaptureClientAreaAsync(IntPtr hWnd, CancellationToken ct = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (ct.IsCancellationRequested)
+            return null;
+
+        // Controlled single-flight capture gate: prevents accumulation of blocked worker threads
+        bool acquired = await _captureGate.WaitAsync(0, ct).ConfigureAwait(false);
+        if (!acquired)
+        {
+            _logger?.Warning($"Capture throttled: A prior capture is still in flight for HWND {HwndFormatter.Format(hWnd)}.");
+            return null;
+        }
+
+        try
+        {
+            return await Task.Run(() => CaptureClientArea(hWnd), ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _captureGate.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        if (!_disposed)
+        {
+            _captureGate.Dispose();
+            _disposed = true;
         }
     }
 }

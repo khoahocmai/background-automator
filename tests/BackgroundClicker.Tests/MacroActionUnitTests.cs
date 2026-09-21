@@ -38,6 +38,11 @@ public class MacroActionUnitTests
         {
             return OnCapture?.Invoke(hWnd);
         }
+
+        public Task<WindowCapture?> CaptureClientAreaAsync(IntPtr hWnd, CancellationToken ct = default)
+        {
+            return Task.FromResult(CaptureClientArea(hWnd));
+        }
     }
 
     [Fact]
@@ -247,4 +252,50 @@ public class MacroActionUnitTests
 
         Assert.Equal(MacroActionStatus.InvalidConfiguration, result.Status);
     }
+
+    [Fact]
+    public async Task WaitColorAction_TargetClosedDuringPoll_ReturnsTargetUnavailable()
+    {
+        var ctrl = new System.Windows.Forms.Control();
+        ctrl.CreateControl();
+        IntPtr hwnd = ctrl.Handle;
+
+        var fakeClicker = new FakeClicker();
+        var fakeCapture = new FakeCaptureService
+        {
+            OnCapture = h =>
+            {
+                // Simulate window closing on capture attempt
+                ctrl.Dispose();
+                return null;
+            }
+        };
+        var context = new MacroExecutionContext(fakeClicker, fakeCapture, targetHwnd: hwnd);
+
+        var action = new WaitColorAction(10, 10, Color.Red, timeout: TimeSpan.FromSeconds(2), pollInterval: TimeSpan.FromMilliseconds(50));
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(MacroActionStatus.TargetUnavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task WaitColorAction_CaptureFailsOnLiveWindow_ReturnsCaptureFailed()
+    {
+        using var ctrl = new System.Windows.Forms.Control();
+        ctrl.CreateControl();
+        IntPtr hwnd = ctrl.Handle;
+
+        var fakeClicker = new FakeClicker();
+        var fakeCapture = new FakeCaptureService
+        {
+            OnCapture = h => null // Fails to capture even though window is alive
+        };
+        var context = new MacroExecutionContext(fakeClicker, fakeCapture, targetHwnd: hwnd);
+
+        var action = new WaitColorAction(10, 10, Color.Red, timeout: TimeSpan.FromSeconds(2), pollInterval: TimeSpan.FromMilliseconds(50));
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(MacroActionStatus.CaptureFailed, result.Status);
+    }
 }
+

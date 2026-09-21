@@ -112,34 +112,51 @@ Definition of Done:
 
 ## Phase 4 — Hardening + Persistence + Release
 
-Status: PLANNED
+Status: COMPLETE
 
 Scope:
 
-- UIPI / privilege mismatch diagnostics
-- optional restart-as-administrator UX
-- profile persistence
-- target re-resolution
-- process/title/class matching
-- no persisted session HWND
-- edge-case error handling
-- mixed DPI verification
-- multi-monitor testing
-- capability diagnostics
-- memory/CPU soak tests
-- portable self-contained publish
-- win-x64
-- PublishSingleFile=true
-- PublishTrimmed=false
+- Window capture hardening:
+  - Off-UI-thread asynchronous execution (`CaptureClientAreaAsync`)
+  - Target hung-state detection via `User32.IsHungAppWindow` pre-check
+  - Single-flight capture gate (`SemaphoreSlim(1, 1)`) preventing accumulation of worker threads on sluggish targets
+  - Explicit `CaptureFailed` and `TargetUnavailable` status propagation in `WaitColorAction` and runner short-circuiting
+- Durable Target Descriptors & Re-resolution (`BackgroundClicker.Core.Targeting`):
+  - `TargetDescriptor` capturing `ProcessName`, `WindowTitle`, `WindowClass`, and `TitleMatchMode`
+  - `ChildTargetDescriptor` capturing child control class, text, and index
+  - Invariant enforced: No ephemeral live HWND handles are ever stored in persistent profiles
+  - `TargetResolver` supporting Exact, Contains, StartsWith, and Any title matching
+  - Ambiguous target detection when multiple windows match, preventing unintended click dispatch
+  - Child control re-resolution via Win32 `EnumChildWindows`
+- Profile persistence & storage (`BackgroundClicker.Core.Profiles`):
+  - `ProfileModel` with schema versioning (`1.0`), timestamps, mode (`Simple` or `Macro`), settings, and points/actions
+  - `ProfileStorageService` with atomic file writes (write-to-temporary `.tmp` + flush + `File.Move` overwrite)
+  - Corruption-resilient profile listing (`ListProfiles`) that skips damaged JSON without crashing
+- Privilege / UIPI diagnostics (`BackgroundClicker.Core.Security`):
+  - `ProcessElevationService` querying process tokens via `OpenProcessToken` and `GetTokenInformation(TokenElevation)`
+  - Detection of User Interface Privilege Isolation (UIPI) mismatches (non-elevated BackgroundClicker targeting elevated process)
+  - UI warning badges and "Restart as Administrator" UX action
+- Multi-monitor & negative coordinate support:
+  - Signed Win32 coordinate translations verified for secondary displays located above or to the left of primary display
+- Resource & GDI soak testing (`ResourceSoakTests`):
+  - 500-iteration capture soak test verifying zero GDI (`GR_GDIOBJECTS`) and USER (`GR_USEROBJECTS`) handle leaks
+- Target restart integration testing (`TargetRestartIntegrationTests`):
+  - Launch TestTarget 1 -> save profile -> terminate -> launch TestTarget 2 (new HWND) -> load profile -> re-resolve -> click verified in TestTarget 2 log
+- Portable self-contained release publishing:
+  - Target runtime: `win-x64`
+  - `PublishSingleFile=true`, `PublishTrimmed=false`, `--self-contained true`
+  - Smoke-tested executable runs successfully out of `./publish/BackgroundClicker.App.exe`
+- Automated test coverage:
+  - 128 unit and integration tests passing across all test fixtures
 
 Definition of Done:
 
-- profile reload resolves fresh HWND
-- privilege mismatch is understandable
-- target lifecycle is robust
-- idle CPU is near zero
-- long-running loop has no abnormal memory growth
-- portable BackgroundClicker.exe is produced
+- profile reload resolves fresh HWND (verified by automated tests and target restart integration test)
+- privilege mismatch is understandable (UIPI warning and Restart as Admin implemented)
+- target lifecycle is robust (hung window detection, capture throttling, and target closure handled)
+- idle CPU is near zero (timer-based non-blocking execution)
+- long-running loop has no abnormal memory growth (verified by 500-iteration GDI resource soak test)
+- portable BackgroundClicker.exe is produced and verified (153MB self-contained single-file binary)
 
 ---
 

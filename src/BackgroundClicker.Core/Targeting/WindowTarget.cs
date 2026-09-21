@@ -50,6 +50,11 @@ public sealed class WindowTarget
     public bool IsRootValid() =>
         RootHwnd != IntPtr.Zero && User32.IsWindow(RootHwnd);
 
+    /// <summary>
+    /// Checks whether the target HWND is a child window inside the root window.
+    /// </summary>
+    public bool IsChildWindow => RootHwnd != IntPtr.Zero && TargetHwnd != IntPtr.Zero && RootHwnd != TargetHwnd;
+
     public override string ToString() =>
         $"{DisplayText} | Target: {HwndFormatter.Format(TargetHwnd)} Client: ({ClientPoint.ClientX}, {ClientPoint.ClientY})";
 }

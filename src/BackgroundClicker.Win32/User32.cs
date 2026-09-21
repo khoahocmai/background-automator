@@ -80,6 +80,10 @@ public static class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindow(IntPtr hWnd);
 
+    [DllImport(User32Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsHungAppWindow(IntPtr hWnd);
+
     [DllImport(User32Dll, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -98,6 +102,12 @@ public static class User32
     [DllImport(User32Dll, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool ReleaseCapture();
+
+    public const uint GR_GDIOBJECTS = 0;
+    public const uint GR_USEROBJECTS = 1;
+
+    [DllImport(User32Dll, SetLastError = true)]
+    public static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
 
     [DllImport(User32Dll)]
     public static extern IntPtr GetCapture();

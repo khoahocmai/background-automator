@@ -6,7 +6,9 @@ using BackgroundClicker.Core.Clicking;
 using BackgroundClicker.Core.Coordinates;
 using BackgroundClicker.Core.Logging;
 using BackgroundClicker.Core.Macro;
+using BackgroundClicker.Core.Profiles;
 using BackgroundClicker.Core.Runner;
+using BackgroundClicker.Core.Security;
 using BackgroundClicker.Core.Targeting;
 using BackgroundClicker.Win32;
 
@@ -21,7 +23,11 @@ public sealed class MainForm : Form
     private readonly ClickRunner _runner;
     private readonly GdiWindowCaptureService _captureService;
     private readonly MacroRunner _macroRunner;
+    private readonly ProcessElevationService _elevationService;
+    private readonly TargetResolver _targetResolver;
+    private readonly ProfileStorageService _profileStorage;
     private GlobalHotkeyManager? _hotkeyManager;
+    private TargetDescriptor? _activeProfileTarget;
 
     // Macro Mode State
     private readonly List<IMacroAction> _macroActions = new();
@@ -100,6 +106,20 @@ public sealed class MainForm : Form
     private Button _btnMacroStop = null!;
     private Label _lblMacroStatus = null!;
 
+    // Controls - Inspector Elevation & UIPI
+    private Label _lblElevation = null!;
+    private Button _btnRestartAdmin = null!;
+
+    // Controls - Profiles Tab
+    private TextBox _txtProfileName = null!;
+    private ComboBox _cboProfileMode = null!;
+    private Label _lblProfileTarget = null!;
+    private Button _btnSaveProfile = null!;
+    private Button _btnLoadProfile = null!;
+    private Button _btnReResolve = null!;
+    private Button _btnDeleteProfile = null!;
+    private ListView _lvProfiles = null!;
+
     // Bottom Status Strip
     private Label _lblStatusTarget = null!;
     private Label _lblStatusRunner = null!;
@@ -117,6 +137,9 @@ public sealed class MainForm : Form
         _runner = new ClickRunner(_clicker, _logger);
         _captureService = new GdiWindowCaptureService(_logger);
         _macroRunner = new MacroRunner(_logger);
+        _elevationService = new ProcessElevationService(_logger);
+        _targetResolver = new TargetResolver(_targetService, _coordinateService, _logger);
+        _profileStorage = new ProfileStorageService(logger: _logger);
 
         InitializeComponents();
         WireRunnerEvents();
@@ -131,9 +154,9 @@ public sealed class MainForm : Form
 
     private void InitializeComponents()
     {
-        Text = "BackgroundClicker — Background Clicker MVP (Phase 3)";
-        ClientSize = new Size(760, 720);
-        MinimumSize = new Size(700, 650);
+        Text = "BackgroundClicker — Background Clicker (Phase 4 — Hardened Release)";
+        ClientSize = new Size(780, 740);
+        MinimumSize = new Size(720, 680);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -147,17 +170,20 @@ public sealed class MainForm : Form
         var tabTarget = new TabPage("Target Inspector");
         var tabSimple = new TabPage("Simple Mode");
         var tabMacro = new TabPage("Macro Mode");
+        var tabProfiles = new TabPage("Profiles");
         var tabLog = new TabPage("Diagnostic Log");
 
         // Build Tabs
         BuildTargetTab(tabTarget);
         BuildSimpleTab(tabSimple);
         BuildMacroTab(tabMacro);
+        BuildProfilesTab(tabProfiles);
         BuildLogTab(tabLog);
 
         tabControl.TabPages.Add(tabTarget);
         tabControl.TabPages.Add(tabSimple);
         tabControl.TabPages.Add(tabMacro);
+        tabControl.TabPages.Add(tabProfiles);
         tabControl.TabPages.Add(tabLog);
 
         // Bottom Status Strip
@@ -330,6 +356,37 @@ public sealed class MainForm : Form
 
         tblGrid.Controls.Add(pnlActions, 1, 6);
         tblGrid.SetColumnSpan(pnlActions, 3);
+
+        _lblElevation = CreateValueLabel("-");
+        _btnRestartAdmin = new Button
+        {
+            Text = "🛡️ Restart as Administrator",
+            Size = new Size(190, 24),
+            BackColor = Color.FromArgb(255, 240, 230),
+            ForeColor = Color.DarkRed,
+            Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold, GraphicsUnit.Point),
+            Visible = false
+        };
+        _btnRestartAdmin.Click += (s, e) =>
+        {
+            if (ProcessElevationService.RestartAsAdministrator())
+            {
+                Close();
+            }
+        };
+
+        var pnlElevation = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = new Padding(0)
+        };
+        pnlElevation.Controls.Add(_lblElevation);
+        pnlElevation.Controls.Add(_btnRestartAdmin);
+
+        tblGrid.Controls.Add(CreateHeaderLabel("Elevation:"), 0, 7);
+        tblGrid.Controls.Add(pnlElevation, 1, 7);
+        tblGrid.SetColumnSpan(pnlElevation, 3);
 
         grpInspector.Controls.Add(tblGrid);
 
@@ -803,6 +860,364 @@ public sealed class MainForm : Form
         page.Controls.Add(pnlMacro);
     }
 
+    private void BuildProfilesTab(TabPage page)
+    {
+        var pnlProfiles = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10)
+        };
+
+        var grpConfig = new GroupBox
+        {
+            Text = "Profile Configuration & Target Re-Resolution",
+            Dock = DockStyle.Top,
+            Height = 145,
+            Padding = new Padding(10)
+        };
+
+        var lblName = new Label { Text = "Profile Name:", Location = new Point(12, 24), AutoSize = true };
+        _txtProfileName = new TextBox { Location = new Point(100, 21), Width = 200, Text = "DefaultProfile" };
+
+        var lblMode = new Label { Text = "Mode:", Location = new Point(315, 24), AutoSize = true };
+        _cboProfileMode = new ComboBox
+        {
+            Location = new Point(365, 21),
+            Width = 120,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _cboProfileMode.Items.AddRange(new object[] { "Simple Mode", "Macro Mode" });
+        _cboProfileMode.SelectedIndex = 0;
+
+        _lblProfileTarget = new Label
+        {
+            Text = "Target Descriptor: [No target selected]",
+            Location = new Point(12, 54),
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 8.8F, FontStyle.Bold, GraphicsUnit.Point),
+            ForeColor = Color.DarkSlateBlue
+        };
+
+        var pnlButtons = new FlowLayoutPanel
+        {
+            Location = new Point(12, 85),
+            Size = new Size(720, 48),
+            FlowDirection = FlowDirection.LeftToRight
+        };
+
+        _btnSaveProfile = new Button
+        {
+            Text = "💾 Save Profile",
+            Size = new Size(130, 32),
+            Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold, GraphicsUnit.Point)
+        };
+        _btnSaveProfile.Click += (s, e) => SaveCurrentProfile();
+
+        _btnLoadProfile = new Button
+        {
+            Text = "📂 Load Profile",
+            Size = new Size(130, 32),
+            Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold, GraphicsUnit.Point)
+        };
+        _btnLoadProfile.Click += (s, e) => LoadSelectedProfile();
+
+        _btnReResolve = new Button
+        {
+            Text = "🔄 Re-resolve Target",
+            Size = new Size(150, 32),
+            Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold, GraphicsUnit.Point)
+        };
+        _btnReResolve.Click += (s, e) => ReResolveCurrentProfileTarget();
+
+        _btnDeleteProfile = new Button
+        {
+            Text = "🗑 Delete Profile",
+            Size = new Size(120, 32),
+            ForeColor = Color.DarkRed
+        };
+        _btnDeleteProfile.Click += (s, e) => DeleteSelectedProfile();
+
+        pnlButtons.Controls.Add(_btnSaveProfile);
+        pnlButtons.Controls.Add(_btnLoadProfile);
+        pnlButtons.Controls.Add(_btnReResolve);
+        pnlButtons.Controls.Add(_btnDeleteProfile);
+
+        grpConfig.Controls.Add(lblName);
+        grpConfig.Controls.Add(_txtProfileName);
+        grpConfig.Controls.Add(lblMode);
+        grpConfig.Controls.Add(_cboProfileMode);
+        grpConfig.Controls.Add(_lblProfileTarget);
+        grpConfig.Controls.Add(pnlButtons);
+
+        var grpList = new GroupBox
+        {
+            Text = "Saved Profiles",
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10)
+        };
+
+        _lvProfiles = new ListView
+        {
+            Dock = DockStyle.Fill,
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true,
+            MultiSelect = false
+        };
+        _lvProfiles.Columns.Add("Profile Name", 160);
+        _lvProfiles.Columns.Add("Mode", 90);
+        _lvProfiles.Columns.Add("Target Process / Window", 220);
+        _lvProfiles.Columns.Add("Items", 60);
+        _lvProfiles.Columns.Add("Last Updated", 140);
+
+        _lvProfiles.SelectedIndexChanged += OnProfileSelectionChanged;
+        _lvProfiles.DoubleClick += (s, e) => LoadSelectedProfile();
+
+        grpList.Controls.Add(_lvProfiles);
+
+        pnlProfiles.Controls.Add(grpList);
+        pnlProfiles.Controls.Add(grpConfig);
+
+        page.Controls.Add(pnlProfiles);
+    }
+
+    private void OnProfileSelectionChanged(object? sender, EventArgs e)
+    {
+        if (_lvProfiles.SelectedItems.Count > 0)
+        {
+            string name = _lvProfiles.SelectedItems[0].Text;
+            _txtProfileName.Text = name;
+            try
+            {
+                var profile = _profileStorage.LoadProfileByName(name);
+                _cboProfileMode.SelectedIndex = profile.Mode == ProfileMode.Macro ? 1 : 0;
+                if (profile.Target != null)
+                {
+                    _lblProfileTarget.Text = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
+                }
+                else
+                {
+                    _lblProfileTarget.Text = "Target Descriptor: [No target in profile]";
+                }
+            }
+            catch
+            {
+                // Ignore preview failure
+            }
+        }
+    }
+
+    private void SaveCurrentProfile()
+    {
+        string name = _txtProfileName.Text.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            MessageBox.Show("Please enter a valid profile name.", "Save Profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var mode = _cboProfileMode.SelectedIndex == 1 ? ProfileMode.Macro : ProfileMode.Simple;
+        var profile = new ProfileModel
+        {
+            Name = name,
+            Mode = mode
+        };
+
+        if (_currentTarget != null)
+        {
+            profile.Target = TargetDescriptor.FromWindowTarget(_currentTarget, TitleMatchMode.Contains);
+        }
+        else if (_activeProfileTarget != null)
+        {
+            profile.Target = _activeProfileTarget;
+        }
+
+        if (mode == ProfileMode.Simple)
+        {
+            profile.SimpleSettings = new ClickRunnerSettingsConfig
+            {
+                IntervalMs = (int)_numInterval.Value,
+                RepeatMode = _radCount.Checked ? RepeatMode.Count : RepeatMode.UntilStopped,
+                RepeatCount = (int)_numRepeatCount.Value
+            };
+            profile.ClickPoints = _simplePoints.Select(p => ClickPointConfig.FromClickPoint(p)).ToList();
+        }
+        else
+        {
+            profile.MacroActions = _macroActions.Select(MacroActionConfig.FromMacroAction).ToList();
+        }
+
+        try
+        {
+            _profileStorage.SaveProfile(profile);
+            _activeProfileTarget = profile.Target;
+            RefreshProfileList();
+            _logger.Info($"Profile '{name}' saved successfully.");
+            MessageBox.Show($"Profile '{name}' saved successfully.", "Save Profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Failed to save profile '{name}'", ex);
+            MessageBox.Show($"Failed to save profile: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void LoadSelectedProfile()
+    {
+        if (_lvProfiles.SelectedItems.Count == 0)
+            return;
+
+        string name = _lvProfiles.SelectedItems[0].Text;
+        try
+        {
+            var profile = _profileStorage.LoadProfileByName(name);
+            _txtProfileName.Text = profile.Name;
+            _cboProfileMode.SelectedIndex = profile.Mode == ProfileMode.Macro ? 1 : 0;
+            _activeProfileTarget = profile.Target;
+
+            if (profile.Target != null)
+            {
+                _lblProfileTarget.Text = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
+
+                // Attempt automatic re-resolution
+                var res = _targetResolver.Resolve(profile.Target);
+                if (res.IsSuccess && res.Target != null)
+                {
+                    CommitTarget(res.Target);
+                    _logger.Info($"Re-resolved profile target to HWND {HwndFormatter.Format(res.Target.TargetHwnd)}");
+                }
+                else if (res.Status == TargetResolutionStatus.Ambiguous)
+                {
+                    _logger.Warning($"Target re-resolution ambiguous: {res.Candidates.Count} matching windows found.");
+                    MessageBox.Show($"Multiple matching windows ({res.Candidates.Count}) found for process '{profile.Target.ProcessName}'. Please select the specific window in Target Inspector.", "Ambiguous Target", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    _logger.Warning($"Target re-resolution: {res.Message}");
+                    _lblStatus.Text = $"Target not found: {profile.Target.ProcessName}";
+                    _lblStatus.ForeColor = Color.Crimson;
+                }
+            }
+            else
+            {
+                _lblProfileTarget.Text = "Target Descriptor: [None]";
+            }
+
+            if (profile.Mode == ProfileMode.Simple)
+            {
+                _simplePoints.Clear();
+
+                if (profile.SimpleSettings != null)
+                {
+                    _numInterval.Value = Math.Clamp(profile.SimpleSettings.IntervalMs, (int)_numInterval.Minimum, (int)_numInterval.Maximum);
+                    if (profile.SimpleSettings.RepeatMode == RepeatMode.Count)
+                    {
+                        _radCount.Checked = true;
+                        _numRepeatCount.Value = Math.Clamp(profile.SimpleSettings.RepeatCount, (int)_numRepeatCount.Minimum, (int)_numRepeatCount.Maximum);
+                    }
+                    else
+                    {
+                        _radUntilStopped.Checked = true;
+                    }
+                }
+
+                IntPtr targetHwnd = _currentTarget?.TargetHwnd ?? IntPtr.Zero;
+                foreach (var ptConfig in profile.ClickPoints)
+                {
+                    _simplePoints.Add(ptConfig.ToClickPoint(targetHwnd));
+                }
+                RefreshPointsList();
+            }
+            else
+            {
+                _macroActions.Clear();
+
+                foreach (var actConfig in profile.MacroActions)
+                {
+                    _macroActions.Add(actConfig.ToMacroAction());
+                }
+                RefreshMacroList();
+            }
+
+            _logger.Info($"Profile '{profile.Name}' loaded successfully.");
+        }
+        catch (Exception ex)
+        {
+            _logger.Error($"Failed to load profile '{name}'", ex);
+            MessageBox.Show($"Failed to load profile: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ReResolveCurrentProfileTarget()
+    {
+        if (_activeProfileTarget == null && _currentTarget != null)
+        {
+            _activeProfileTarget = TargetDescriptor.FromWindowTarget(_currentTarget, TitleMatchMode.Contains);
+        }
+
+        if (_activeProfileTarget == null)
+        {
+            MessageBox.Show("No target descriptor is currently loaded or configured.", "Re-resolve Target", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var res = _targetResolver.Resolve(_activeProfileTarget);
+        if (res.IsSuccess && res.Target != null)
+        {
+            CommitTarget(res.Target);
+            _logger.Info($"Target re-resolved successfully to HWND {HwndFormatter.Format(res.Target.TargetHwnd)}");
+            MessageBox.Show($"Target re-resolved successfully to HWND {HwndFormatter.Format(res.Target.TargetHwnd)} ({res.Target.ProcessName})", "Re-resolve Target", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        else if (res.Status == TargetResolutionStatus.Ambiguous)
+        {
+            MessageBox.Show($"Found {res.Candidates.Count} matching windows. Ambiguity must be resolved manually via Target Inspector.", "Ambiguous Target", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+        else
+        {
+            MessageBox.Show($"Target not found: {res.Message}", "Target Not Found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void DeleteSelectedProfile()
+    {
+        if (_lvProfiles.SelectedItems.Count == 0)
+            return;
+
+        string name = _lvProfiles.SelectedItems[0].Text;
+        if (MessageBox.Show($"Are you sure you want to delete profile '{name}'?", "Confirm Delete", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        {
+            _profileStorage.DeleteProfile(name);
+            RefreshProfileList();
+            _logger.Info($"Profile '{name}' deleted.");
+        }
+    }
+
+    private void RefreshProfileList()
+    {
+        try
+        {
+            var headers = _profileStorage.ListProfiles();
+            _lvProfiles.BeginUpdate();
+            _lvProfiles.Items.Clear();
+
+            foreach (var h in headers)
+            {
+                var lvi = new ListViewItem(h.Name);
+                lvi.SubItems.Add(h.Mode == ProfileMode.Simple ? "Simple" : "Macro");
+                lvi.SubItems.Add(h.TargetDescription);
+                lvi.SubItems.Add(h.ItemCount.ToString());
+                lvi.SubItems.Add(h.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"));
+                _lvProfiles.Items.Add(lvi);
+            }
+
+            _lvProfiles.EndUpdate();
+        }
+        catch (Exception ex)
+        {
+            _logger.Error("Failed to refresh profile list", ex);
+        }
+    }
+
     private void BuildLogTab(TabPage page)
     {
         var pnlLog = new Panel
@@ -959,7 +1374,8 @@ public sealed class MainForm : Form
     {
         base.OnLoad(e);
         RefreshWindowList();
-        _logger.Info("BackgroundClicker initialized (Phase 2)");
+        RefreshProfileList();
+        _logger.Info("BackgroundClicker initialized (Phase 4 — Hardened Release)");
     }
 
     private static Label CreateHeaderLabel(string text) => new()
@@ -1158,6 +1574,27 @@ public sealed class MainForm : Form
 
         _lblStatus.Text = statusText;
         _lblStatus.ForeColor = statusColor;
+
+        // UIPI / Elevation diagnostic check
+        var elevationResult = _elevationService.CheckCompatibility(target.ProcessId);
+        if (elevationResult.Compatibility == ElevationCompatibility.UipiMismatch)
+        {
+            _lblElevation.Text = "⚠️ UIPI Mismatch: Target is Elevated! Clicks will be blocked.";
+            _lblElevation.ForeColor = Color.Crimson;
+            _btnRestartAdmin.Visible = true;
+        }
+        else if (elevationResult.Compatibility == ElevationCompatibility.Compatible)
+        {
+            _lblElevation.Text = elevationResult.CurrentProcessElevated ? "Compatible (Running as Admin)" : "Compatible (Standard User)";
+            _lblElevation.ForeColor = Color.ForestGreen;
+            _btnRestartAdmin.Visible = false;
+        }
+        else
+        {
+            _lblElevation.Text = "Elevation Status Unknown";
+            _lblElevation.ForeColor = Color.DarkOrange;
+            _btnRestartAdmin.Visible = true;
+        }
     }
 
     private void ClearTarget()
@@ -1175,6 +1612,9 @@ public sealed class MainForm : Form
         _lblClass.Text = "-";
         _lblScreenCoords.Text = "X: - | Y: -";
         _lblClientCoords.Text = "X: - | Y: -";
+        _lblElevation.Text = "-";
+        _lblElevation.ForeColor = Color.Black;
+        _btnRestartAdmin.Visible = false;
 
         _lblStatus.Text = "Target cleared";
         _lblStatus.ForeColor = Color.DimGray;

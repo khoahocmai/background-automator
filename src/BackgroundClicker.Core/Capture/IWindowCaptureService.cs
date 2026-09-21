@@ -15,4 +15,14 @@ public interface IWindowCaptureService
     /// <param name="hWnd">HWND of the target window.</param>
     /// <returns>A disposable <see cref="WindowCapture"/> or null.</returns>
     WindowCapture? CaptureClientArea(IntPtr hWnd);
+
+    /// <summary>
+    /// Asynchronously captures the client area on a controlled background thread,
+    /// ensuring the calling/UI thread is not blocked by a sluggish or hung target window.
+    /// Caller is responsible for disposing the returned <see cref="WindowCapture"/>.
+    /// </summary>
+    /// <param name="hWnd">HWND of the target window.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A task returning a disposable <see cref="WindowCapture"/> or null.</returns>
+    Task<WindowCapture?> CaptureClientAreaAsync(IntPtr hWnd, CancellationToken ct = default);
 }

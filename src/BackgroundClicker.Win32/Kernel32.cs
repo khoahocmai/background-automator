@@ -23,6 +23,9 @@ public static class Kernel32
     public static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
 
     [DllImport(Kernel32Dll)]
+    public static extern IntPtr GetCurrentProcess();
+
+    [DllImport(Kernel32Dll)]
     public static extern uint GetCurrentProcessId();
 
     [DllImport(Kernel32Dll)]

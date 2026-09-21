@@ -82,21 +82,29 @@ public sealed class WaitColorAction : IMacroAction
                 return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed during WaitColor.");
             }
 
-            using (WindowCapture? capture = context.CaptureService.CaptureClientArea(targetHwnd))
+            WindowCapture? capture = await context.CaptureService.CaptureClientAreaAsync(targetHwnd, ct).ConfigureAwait(false);
+            if (capture == null)
             {
-                if (capture != null)
+                if (!User32.IsWindow(targetHwnd))
                 {
-                    if (ClientX < 0 || ClientX >= capture.Width || ClientY < 0 || ClientY >= capture.Height)
-                    {
-                        return MacroActionResult.InvalidConfiguration(
-                            $"Client coordinate ({ClientX}, {ClientY}) is outside capture bounds ({capture.Width}x{capture.Height}) for HWND {HwndFormatter.Format(targetHwnd)}.");
-                    }
+                    return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed during WaitColor.");
+                }
 
-                    if (capture.MatchesColor(ClientX, ClientY, TargetColor, Tolerance))
-                    {
-                        return MacroActionResult.Success(
-                            $"Matched color RGB({TargetColor.R},{TargetColor.G},{TargetColor.B}) at ({ClientX}, {ClientY}) in {sw.ElapsedMilliseconds}ms.");
-                    }
+                return MacroActionResult.CaptureFailed($"Capture failed for HWND {HwndFormatter.Format(targetHwnd)} during WaitColor.");
+            }
+
+            using (capture)
+            {
+                if (ClientX < 0 || ClientX >= capture.Width || ClientY < 0 || ClientY >= capture.Height)
+                {
+                    return MacroActionResult.InvalidConfiguration(
+                        $"Client coordinate ({ClientX}, {ClientY}) is outside capture bounds ({capture.Width}x{capture.Height}) for HWND {HwndFormatter.Format(targetHwnd)}.");
+                }
+
+                if (capture.MatchesColor(ClientX, ClientY, TargetColor, Tolerance))
+                {
+                    return MacroActionResult.Success(
+                        $"Matched color RGB({TargetColor.R},{TargetColor.G},{TargetColor.B}) at ({ClientX}, {ClientY}) in {sw.ElapsedMilliseconds}ms.");
                 }
             }
 

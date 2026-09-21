@@ -45,6 +45,7 @@ public class MacroRunnerTests
     private class DummyCaptureService : IWindowCaptureService
     {
         public WindowCapture? CaptureClientArea(IntPtr hWnd) => null;
+        public Task<WindowCapture?> CaptureClientAreaAsync(IntPtr hWnd, CancellationToken ct = default) => Task.FromResult<WindowCapture?>(null);
     }
 
     [Fact]
@@ -165,5 +166,30 @@ public class MacroRunnerTests
         Assert.Equal(MacroRunnerState.Idle, runner.State);
 
         Assert.Equal(new[] { "Start:Run1", "End:Run1", "Start:Run2", "End:Run2" }, log);
+    }
+
+    [Theory]
+    [InlineData(MacroActionStatus.CaptureFailed)]
+    [InlineData(MacroActionStatus.TargetUnavailable)]
+    public async Task MacroRunner_ShortCircuitsOnTerminalCaptureStatuses(MacroActionStatus failureStatus)
+    {
+        using var runner = new MacroRunner();
+        var executionLog = new List<string>();
+
+        var failureResult = failureStatus == MacroActionStatus.CaptureFailed
+            ? MacroActionResult.CaptureFailed("Capture failed")
+            : MacroActionResult.TargetUnavailable("Target closed");
+
+        var action1 = new ActionTracker("Action1", executionLog);
+        var actionFail = new ActionTracker("ActionFail", executionLog, result: failureResult);
+        var action3 = new ActionTracker("Action3", executionLog);
+
+        var context = new MacroExecutionContext(new DummyClicker(), new DummyCaptureService());
+        var result = await runner.RunAsync(new[] { action1, actionFail, action3 }, context);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(failureStatus, result.FinalStatus);
+        Assert.Equal(1, result.CompletedActionsCount);
+        Assert.DoesNotContain("Start:Action3", executionLog);
     }
 }
