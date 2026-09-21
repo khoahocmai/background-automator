@@ -2,7 +2,10 @@
 
 BackgroundClicker is a Windows desktop utility designed for targeting, inspecting, and automating interactions with background and foreground application windows without moving the physical mouse cursor.
 
-**Development roadmap:** [docs/PHASES.md](docs/PHASES.md)
+## Documentation
+
+* **User Guide (Hướng dẫn sử dụng tiếng Việt)**: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
+* **Development Roadmap & Phases**: [docs/PHASES.md](docs/PHASES.md)
 
 ## Current Status: Phase 4 (Hardening + Persistence + Release) — COMPLETE
 
