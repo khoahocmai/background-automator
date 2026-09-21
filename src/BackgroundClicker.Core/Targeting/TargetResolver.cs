@@ -77,13 +77,22 @@ public class TargetResolver
                     $"Root window found (HWND {HwndFormatter.Format(rootHwnd)}) but child control matching class='{descriptor.ChildDescriptor.ControlClass}' text='{descriptor.ChildDescriptor.ControlText}' was not found.");
             }
 
-            int index = descriptor.ChildDescriptor.ControlIndex ?? 0;
-            if (index < 0 || index >= childMatches.Count)
+            if (childMatches.Count > 1)
             {
-                index = 0;
+                _logger?.Warning($"TargetResolver: Root window found (HWND {HwndFormatter.Format(rootHwnd)}) but found {childMatches.Count} matching child controls. Target is ambiguous.");
+                var childCandidates = childMatches.Select(h => new WindowTargetCandidate(
+                    h,
+                    rootCandidate.ProcessId,
+                    rootCandidate.ThreadId,
+                    rootCandidate.ProcessName,
+                    User32.GetWindowTextSafe(h),
+                    User32.GetClassNameSafe(h)
+                )).ToList();
+                return TargetResolutionResult.CreateAmbiguous(childCandidates,
+                    $"Found {childMatches.Count} matching child controls in root window (HWND {HwndFormatter.Format(rootHwnd)}). Ambiguity must be resolved before targeting.");
             }
 
-            targetHwnd = childMatches[index];
+            targetHwnd = childMatches[0];
             parentHwnd = User32.GetParent(targetHwnd);
             targetTitle = User32.GetWindowTextSafe(targetHwnd);
             targetClass = User32.GetClassNameSafe(targetHwnd);

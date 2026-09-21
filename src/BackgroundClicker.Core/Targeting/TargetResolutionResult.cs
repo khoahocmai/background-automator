@@ -39,9 +39,9 @@ public sealed class TargetResolutionResult
     public static TargetResolutionResult CreateNotFound(string reason) =>
         new(TargetResolutionStatus.NotFound, null, Array.Empty<WindowTargetCandidate>(), reason);
 
-    public static TargetResolutionResult CreateAmbiguous(IReadOnlyList<WindowTargetCandidate> candidates) =>
+    public static TargetResolutionResult CreateAmbiguous(IReadOnlyList<WindowTargetCandidate> candidates, string? message = null) =>
         new(TargetResolutionStatus.Ambiguous, null, candidates,
-            $"Found {candidates.Count} matching windows. Ambiguity must be resolved before targeting.");
+            message ?? $"Found {candidates.Count} matching windows. Ambiguity must be resolved before targeting.");
 
     public static TargetResolutionResult CreateInvalid(string reason) =>
         new(TargetResolutionStatus.TargetInvalid, null, Array.Empty<WindowTargetCandidate>(), reason);

@@ -195,4 +195,77 @@ public class ProfileStorageTests : IDisposable
         Assert.True(deleted);
         Assert.False(File.Exists(path));
     }
+
+    [Fact]
+    public void LoadProfile_UnsupportedVersionString_ThrowsNotSupportedException()
+    {
+        string path = Path.Combine(_testDir, "unsupported_version.json");
+        File.WriteAllText(path, """
+        {
+            "version": "999.0",
+            "name": "FutureProfile",
+            "mode": "Simple"
+        }
+        """);
+
+        var ex = Assert.Throws<NotSupportedException>(() => _storage.LoadProfile(path));
+        Assert.Contains("999.0", ex.Message);
+    }
+
+    [Fact]
+    public void LoadProfile_UnsupportedVersionInt_ThrowsException()
+    {
+        string path = Path.Combine(_testDir, "int_version.json");
+        File.WriteAllText(path, """
+        {
+            "version": 999,
+            "name": "IntVersionProfile",
+            "mode": "Simple"
+        }
+        """);
+
+        Assert.ThrowsAny<Exception>(() => _storage.LoadProfile(path));
+    }
+
+    [Fact]
+    public void LoadProfile_MissingSchemaVersion_ThrowsInvalidDataException()
+    {
+        string path = Path.Combine(_testDir, "missing_version.json");
+        File.WriteAllText(path, """
+        {
+            "name": "NoVersionProfile",
+            "mode": "Simple"
+        }
+        """);
+
+        Assert.Throws<InvalidDataException>(() => _storage.LoadProfile(path));
+    }
+
+    [Fact]
+    public void LoadProfile_MissingName_ThrowsInvalidDataException()
+    {
+        string path = Path.Combine(_testDir, "missing_name.json");
+        File.WriteAllText(path, """
+        {
+            "version": "1.0",
+            "mode": "Simple"
+        }
+        """);
+
+        Assert.Throws<InvalidDataException>(() => _storage.LoadProfile(path));
+    }
+
+    [Fact]
+    public void MacroActionConfig_UnknownActionType_ThrowsInvalidOperationException()
+    {
+        var config = new MacroActionConfig
+        {
+            ActionType = "UnknownFutureAction",
+            X = 10,
+            Y = 20
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => config.ToMacroAction());
+        Assert.Contains("UnknownFutureAction", ex.Message);
+    }
 }

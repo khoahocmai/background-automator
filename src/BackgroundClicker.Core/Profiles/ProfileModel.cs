@@ -9,9 +9,13 @@ namespace BackgroundClicker.Core.Profiles;
 public sealed class ProfileModel
 {
     public const string CurrentSchemaVersion = "1.0";
+    public static readonly string[] SupportedVersions = { CurrentSchemaVersion };
 
-    public string Version { get; set; } = CurrentSchemaVersion;
-    public string Name { get; set; } = "Default Profile";
+    public static bool IsVersionSupported(string? version) =>
+        !string.IsNullOrWhiteSpace(version) && SupportedVersions.Contains(version, StringComparer.OrdinalIgnoreCase);
+
+    public string Version { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt { get; set; } = DateTime.UtcNow;
 

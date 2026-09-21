@@ -169,4 +169,103 @@ public class MacroIntegrationTests
         Assert.Equal("2:WaitColor:Success", completedActions[2]);
         Assert.Equal("3:DoubleClick:Success", completedActions[3]);
     }
+
+    [Fact]
+    public async Task WaitColor_TargetDestroyedDuringPolling_HaltsWithTargetUnavailable()
+    {
+        var fixture = new TestTargetFixture();
+        try
+        {
+            Assert.NotEqual(IntPtr.Zero, fixture.ColorPanelHwnd);
+
+            var clicker = new BackgroundClickerEngine(_logger);
+            var captureService = new GdiWindowCaptureService(_logger);
+            var context = new MacroExecutionContext(clicker, captureService, _logger, fixture.MainWindowHandle);
+
+            using var runner = new MacroRunner(_logger);
+
+            // WaitColorAction polling for a color that will never match
+            var actions = new List<IMacroAction>
+            {
+                new WaitColorAction(
+                    clientX: 20,
+                    clientY: 20,
+                    targetColor: Color.FromArgb(255, 0, 255),
+                    tolerance: 0,
+                    timeout: TimeSpan.FromSeconds(5),
+                    pollInterval: TimeSpan.FromMilliseconds(40),
+                    overrideHwnd: fixture.ColorPanelHwnd),
+                new ClickAction(10, 10, overrideHwnd: fixture.ButtonHwnd)
+            };
+
+            var completedActions = new List<string>();
+            runner.ActionCompleted += (idx, act, res) =>
+            {
+                completedActions.Add($"{idx}:{act.Name}:{res.Status}");
+            };
+
+            var runTask = runner.RunAsync(actions, context);
+
+            // Give runner time to enter polling loop
+            await Task.Delay(150);
+
+            // Kill target process while WaitColor is in-flight
+            fixture.Process.Kill();
+            fixture.Process.WaitForExit(3000);
+
+            MacroExecutionResult executionResult = await runTask;
+
+            Assert.False(executionResult.IsSuccess);
+            Assert.Equal(MacroActionStatus.TargetUnavailable, executionResult.FinalStatus);
+            Assert.Equal(0, executionResult.CompletedActionsCount);
+            Assert.DoesNotContain(completedActions, a => a.Contains("Click"));
+        }
+        finally
+        {
+            fixture.Dispose();
+        }
+    }
+
+    private class FailingCaptureService : IWindowCaptureService
+    {
+        public WindowCapture? CaptureClientArea(IntPtr hWnd) => null;
+        public Task<WindowCapture?> CaptureClientAreaAsync(IntPtr hWnd, CancellationToken ct = default) =>
+            Task.FromResult<WindowCapture?>(null);
+    }
+
+    [Fact]
+    public async Task MacroRunner_CaptureFailed_ShortCircuitsMacro()
+    {
+        using var fixture = new TestTargetFixture();
+        Assert.NotEqual(IntPtr.Zero, fixture.ColorPanelHwnd);
+
+        var clicker = new BackgroundClickerEngine(_logger);
+        var failingCaptureService = new FailingCaptureService();
+        var context = new MacroExecutionContext(clicker, failingCaptureService, _logger, fixture.MainWindowHandle);
+
+        using var runner = new MacroRunner(_logger);
+
+        var actions = new List<IMacroAction>
+        {
+            new WaitColorAction(
+                clientX: 20,
+                clientY: 20,
+                targetColor: Color.FromArgb(255, 0, 0),
+                overrideHwnd: fixture.ColorPanelHwnd),
+            new ClickAction(10, 10, overrideHwnd: fixture.ButtonHwnd)
+        };
+
+        var completedActions = new List<string>();
+        runner.ActionCompleted += (idx, act, res) =>
+        {
+            completedActions.Add($"{idx}:{act.Name}:{res.Status}");
+        };
+
+        MacroExecutionResult executionResult = await runner.RunAsync(actions, context);
+
+        Assert.False(executionResult.IsSuccess);
+        Assert.Equal(MacroActionStatus.CaptureFailed, executionResult.FinalStatus);
+        Assert.Equal(0, executionResult.CompletedActionsCount);
+        Assert.DoesNotContain(completedActions, a => a.Contains("Click"));
+    }
 }

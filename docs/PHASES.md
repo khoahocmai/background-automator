@@ -139,7 +139,8 @@ Scope:
 - Multi-monitor & negative coordinate support:
   - Signed Win32 coordinate translations verified for secondary displays located above or to the left of primary display
 - Resource & GDI soak testing (`ResourceSoakTests`):
-  - 500-iteration capture soak test verifying zero GDI (`GR_GDIOBJECTS`) and USER (`GR_USEROBJECTS`) handle leaks
+  - 5,000-iteration capture soak test verifying zero GDI (`GR_GDIOBJECTS`) and USER (`GR_USEROBJECTS`) handle leaks and bounded memory
+  - 5,000-iteration click soak test verifying zero handle leaks and bounded memory
 - Target restart integration testing (`TargetRestartIntegrationTests`):
   - Launch TestTarget 1 -> save profile -> terminate -> launch TestTarget 2 (new HWND) -> load profile -> re-resolve -> click verified in TestTarget 2 log
 - Portable self-contained release publishing:
@@ -147,7 +148,7 @@ Scope:
   - `PublishSingleFile=true`, `PublishTrimmed=false`, `--self-contained true`
   - Smoke-tested executable runs successfully out of `./publish/BackgroundClicker.App.exe`
 - Automated test coverage:
-  - 128 unit and integration tests passing across all test fixtures
+  - 140 unit and integration tests passing across all test fixtures
 
 Definition of Done:
 
@@ -155,8 +156,64 @@ Definition of Done:
 - privilege mismatch is understandable (UIPI warning and Restart as Admin implemented)
 - target lifecycle is robust (hung window detection, capture throttling, and target closure handled)
 - idle CPU is near zero (timer-based non-blocking execution)
-- long-running loop has no abnormal memory growth (verified by 500-iteration GDI resource soak test)
+- long-running loop has no abnormal memory growth (verified by 5,000-iteration GDI resource soak test)
 - portable BackgroundClicker.exe is produced and verified (153MB self-contained single-file binary)
+
+---
+
+## Native Win32 Non-Cancellability Architectural Note
+
+When a native Win32 API call such as `PrintWindow` or synchronous window message dispatch enters unmanaged Windows kernel mode, a managed .NET `CancellationToken` cannot forcibly terminate or abort the in-flight Win32 call without risking process corruption.
+
+To guarantee system stability and responsiveness, BackgroundClicker implements a defense-in-depth architecture:
+1. **Pre-Check Responsiveness**: `User32.IsHungAppWindow(hWnd)` pre-checks target responsiveness before calling `PrintWindow`, immediately skipping hung applications.
+2. **Worker Thread Isolation**: All captures execute asynchronously on worker threads via `CaptureClientAreaAsync`, ensuring the UI message pump and main thread are never blocked.
+3. **Single-Flight Concurrency Throttling**: A single-flight gate (`SemaphoreSlim(1, 1)`) with `WaitAsync(0, ct)` prevents backlog accumulation. If a previous capture is still executing, subsequent capture requests are dropped or safely rejected without spawning an unbounded number of worker threads.
+4. **Failure State Propagation**: Failures produce explicit `CaptureFailed` or `TargetUnavailable` results that halt the macro runner safely.
+
+---
+
+## Backlog / Optional Enhancements
+
+The following features were identified during development but intentionally omitted from the core MVP to maintain stability and simplicity:
+- **Randomized Coordinate Jitter**: Adding configurable `+/- N` pixel jitter to click coordinates to simulate human variation.
+- **Concurrent Multi-Runners**: Simultaneously running multiple independent macro sequences against different target windows concurrently.
+- **Visual Region Selector**: Drag-and-drop bounding box UI for selecting capture sub-regions interactively.
+
+---
+
+## Development workflow
+
+### 1. Build Solution
+```powershell
+dotnet build BackgroundClicker.sln
+```
+
+### 2. Run Test Suite
+```powershell
+dotnet test BackgroundClicker.sln
+```
+Or run specific test fixtures:
+```powershell
+dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
+dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~MacroIntegrationTests"
+dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~TargetRestartIntegrationTests"
+```
+
+### 3. Run TestTarget (Deterministic Target Application)
+```powershell
+dotnet run --project tests/BackgroundClicker.TestTarget/BackgroundClicker.TestTarget.csproj
+```
+
+### 4. Run BackgroundClicker App in Development Mode
+```powershell
+dotnet run --project src/BackgroundClicker.App/BackgroundClicker.App.csproj
+```
+
+### 5. Build Portable Single-File Release
+```powershell
+dotnet publish src/BackgroundClicker.App/BackgroundClicker.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
+```
 
 ---
 
@@ -173,3 +230,4 @@ Definition of Done:
 - no anti-cheat or anti-detection functionality
 - TestTarget remains the canonical deterministic regression target
 - target compatibility must never be assumed universally
+

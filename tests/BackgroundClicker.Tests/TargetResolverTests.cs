@@ -227,4 +227,120 @@ public class TargetResolverTests
         Assert.False(result.IsSuccess);
         Assert.Equal(TargetResolutionStatus.TargetInvalid, result.Status);
     }
+
+    [Fact]
+    public void Resolve_ChildTarget_SingleMatch_ReturnsSuccess()
+    {
+        using var parent = new System.Windows.Forms.Panel();
+        parent.CreateControl();
+        using var child = new System.Windows.Forms.Button { Text = "UniqueButton" };
+        parent.Controls.Add(child);
+        child.CreateControl();
+
+        var coordService = new CoordinateService();
+        var targetService = new FakeWindowTargetService(coordService)
+        {
+            Candidates = new List<WindowTargetCandidate>
+            {
+                new(parent.Handle, 100, 200, "app.exe", "Parent Window", "PanelClass")
+            }
+        };
+
+        var resolver = new TargetResolver(targetService, coordService);
+        var descriptor = new TargetDescriptor
+        {
+            ProcessName = "app",
+            WindowTitle = "Parent Window",
+            ChildDescriptor = new ChildTargetDescriptor
+            {
+                ControlText = "UniqueButton"
+            }
+        };
+
+        var result = resolver.Resolve(descriptor);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(TargetResolutionStatus.Success, result.Status);
+        Assert.NotNull(result.Target);
+        Assert.Equal(child.Handle, result.Target.TargetHwnd);
+        Assert.Equal(parent.Handle, result.Target.RootHwnd);
+    }
+
+    [Fact]
+    public void Resolve_ChildTarget_MultipleMatches_ReturnsAmbiguous()
+    {
+        using var parent = new System.Windows.Forms.Panel();
+        parent.CreateControl();
+        using var child1 = new System.Windows.Forms.Button { Text = "DuplicateBtn" };
+        using var child2 = new System.Windows.Forms.Button { Text = "DuplicateBtn" };
+        parent.Controls.Add(child1);
+        parent.Controls.Add(child2);
+        child1.CreateControl();
+        child2.CreateControl();
+
+        var coordService = new CoordinateService();
+        var targetService = new FakeWindowTargetService(coordService)
+        {
+            Candidates = new List<WindowTargetCandidate>
+            {
+                new(parent.Handle, 100, 200, "app.exe", "Parent Window", "PanelClass")
+            }
+        };
+
+        var resolver = new TargetResolver(targetService, coordService);
+        var descriptor = new TargetDescriptor
+        {
+            ProcessName = "app",
+            WindowTitle = "Parent Window",
+            ChildDescriptor = new ChildTargetDescriptor
+            {
+                ControlText = "DuplicateBtn"
+            }
+        };
+
+        var result = resolver.Resolve(descriptor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(TargetResolutionStatus.Ambiguous, result.Status);
+        Assert.Null(result.Target);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates, c => c.Hwnd == child1.Handle);
+        Assert.Contains(result.Candidates, c => c.Hwnd == child2.Handle);
+    }
+
+    [Fact]
+    public void Resolve_ChildTarget_NotFound_ReturnsNotFound()
+    {
+        using var parent = new System.Windows.Forms.Panel();
+        parent.CreateControl();
+        using var child = new System.Windows.Forms.Button { Text = "ExistingButton" };
+        parent.Controls.Add(child);
+        child.CreateControl();
+
+        var coordService = new CoordinateService();
+        var targetService = new FakeWindowTargetService(coordService)
+        {
+            Candidates = new List<WindowTargetCandidate>
+            {
+                new(parent.Handle, 100, 200, "app.exe", "Parent Window", "PanelClass")
+            }
+        };
+
+        var resolver = new TargetResolver(targetService, coordService);
+        var descriptor = new TargetDescriptor
+        {
+            ProcessName = "app",
+            WindowTitle = "Parent Window",
+            ChildDescriptor = new ChildTargetDescriptor
+            {
+                ControlText = "NonExistentChild"
+            }
+        };
+
+        var result = resolver.Resolve(descriptor);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(TargetResolutionStatus.NotFound, result.Status);
+        Assert.Null(result.Target);
+    }
 }

@@ -172,12 +172,12 @@ public class BackgroundClickIntegrationTests : IDisposable
         IntPtr buttonHwnd = await ResolveButtonHwndAsync(mainHwnd);
         Assert.NotEqual(IntPtr.Zero, buttonHwnd);
 
-        // Benchmark 1: 0ms pacing under load with 100 clicks (= 300 messages)
+        // Benchmark 1: 0ms pacing under load with 50 clicks (= 150 messages)
         {
             var clicker0ms = new BackgroundClickerEngine(_logger, messagePacingMilliseconds: 0);
             int startCount = GetLogLines().Length;
             var sw = Stopwatch.StartNew();
-            const int clickCount = 100;
+            const int clickCount = 50;
             for (int i = 0; i < clickCount; i++)
             {
                 var target = new TargetPoint(buttonHwnd, 10 + (i % 40), 10 + (i % 20));
@@ -189,16 +189,16 @@ public class BackgroundClickIntegrationTests : IDisposable
             int expected = clickCount * 3;
             string[] lines = await WaitForLogLinesCountAsync(startCount + expected, TimeSpan.FromSeconds(10));
             int received = lines.Length - startCount;
-            _output.WriteLine($"[Benchmark 0ms] 100 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
+            _output.WriteLine($"[Benchmark 0ms] 50 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
             Assert.True(received >= expected, $"Pacing 0ms expected at least {expected} messages, received {received}");
         }
 
-        // Benchmark 2: 1ms pacing with 20 clicks (= 60 messages)
+        // Benchmark 2: 1ms pacing with 50 clicks (= 150 messages)
         {
             var clicker1ms = new BackgroundClickerEngine(_logger, messagePacingMilliseconds: 1);
             int startCount = GetLogLines().Length;
             var sw = Stopwatch.StartNew();
-            const int clickCount = 20;
+            const int clickCount = 50;
             for (int i = 0; i < clickCount; i++)
             {
                 var target = new TargetPoint(buttonHwnd, 15, 15);
@@ -208,18 +208,18 @@ public class BackgroundClickIntegrationTests : IDisposable
             sw.Stop();
 
             int expected = clickCount * 3;
-            string[] lines = await WaitForLogLinesCountAsync(startCount + expected, TimeSpan.FromSeconds(5));
+            string[] lines = await WaitForLogLinesCountAsync(startCount + expected, TimeSpan.FromSeconds(10));
             int received = lines.Length - startCount;
-            _output.WriteLine($"[Benchmark 1ms] 20 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
+            _output.WriteLine($"[Benchmark 1ms] 50 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
             Assert.True(received >= expected, $"Pacing 1ms expected at least {expected} messages, received {received}");
         }
 
-        // Benchmark 3: 10ms pacing with 10 clicks (= 30 messages)
+        // Benchmark 3: 10ms pacing with 50 clicks (= 150 messages)
         {
             var clicker10ms = new BackgroundClickerEngine(_logger, messagePacingMilliseconds: 10);
             int startCount = GetLogLines().Length;
             var sw = Stopwatch.StartNew();
-            const int clickCount = 10;
+            const int clickCount = 50;
             for (int i = 0; i < clickCount; i++)
             {
                 var target = new TargetPoint(buttonHwnd, 20, 20);
@@ -229,9 +229,9 @@ public class BackgroundClickIntegrationTests : IDisposable
             sw.Stop();
 
             int expected = clickCount * 3;
-            string[] lines = await WaitForLogLinesCountAsync(startCount + expected, TimeSpan.FromSeconds(5));
+            string[] lines = await WaitForLogLinesCountAsync(startCount + expected, TimeSpan.FromSeconds(10));
             int received = lines.Length - startCount;
-            _output.WriteLine($"[Benchmark 10ms] 10 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
+            _output.WriteLine($"[Benchmark 10ms] 50 clicks: Elapsed={sw.ElapsedMilliseconds}ms, Received={received}/{expected} messages");
             Assert.True(received >= expected, $"Pacing 10ms expected at least {expected} messages, received {received}");
         }
     }

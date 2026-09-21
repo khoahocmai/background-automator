@@ -146,6 +146,8 @@ Targeting and background window interaction depend fundamentally on the input ar
 2. **WPF & Modern UI Frameworks (WinUI, Electron, Chromium)**: Applications such as Chrome, Edge, VS Code, Discord, or modern WPF apps often host their entire UI surface inside a single root HWND (`Chrome_RenderWidgetHostHWND`, `HwndHost`, etc.). In these applications, internal buttons do not have individual HWNDs; the entire client area shares the parent HWND, and coordinates are relative to that surface.
 3. **DirectInput, Raw Input, and Hardware-Polled Games**: Games and applications that bypass the Windows message queue to read directly from hardware devices (DirectInput, Raw Input API, or exclusive-mode DirectX/Vulkan surfaces) may not respond to window-level message posting.
 4. **Security Boundaries (UAC / UIPI)**: BackgroundClicker cannot inspect or interact with windows belonging to processes running at a higher integrity level (e.g. standard user targeting an Administrator window). Running BackgroundClicker as Administrator is required if targeting elevated processes.
+5. **Native Win32 PrintWindow Non-Cancellability**: Win32 `PrintWindow` calls execute in unmanaged kernel/GDI code and cannot be forcefully aborted by a managed `CancellationToken`. BackgroundClicker guards against hangs via `User32.IsHungAppWindow` pre-checks, worker thread dispatch (`CaptureClientAreaAsync`), and a single-flight gate (`SemaphoreSlim(1, 1)`) preventing thread buildup.
+6. **Desktop Session Requirements**: Global hotkeys (F6/F7) and interactive mouse immobility verification require an active Windows interactive desktop session. Virtual CI environments running without a desktop session cannot execute interactive user-input acceptance tests.
 
 ---
 

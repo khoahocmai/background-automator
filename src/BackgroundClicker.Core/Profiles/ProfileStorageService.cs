@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using BackgroundClicker.Core.Logging;
 
 namespace BackgroundClicker.Core.Profiles;
@@ -16,7 +17,8 @@ public class ProfileStorageService
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     public string ProfilesDirectory => _profilesDirectory;
@@ -63,6 +65,9 @@ public class ProfileStorageService
         ArgumentNullException.ThrowIfNull(profile);
         if (string.IsNullOrWhiteSpace(profile.Name))
             throw new ArgumentException("Profile name cannot be empty.", nameof(profile));
+
+        if (string.IsNullOrWhiteSpace(profile.Version))
+            profile.Version = ProfileModel.CurrentSchemaVersion;
 
         profile.UpdatedAt = DateTime.UtcNow;
 
@@ -121,6 +126,12 @@ public class ProfileStorageService
 
         if (string.IsNullOrWhiteSpace(profile.Version))
             throw new InvalidDataException($"Profile at '{filePath}' is missing the schema version.");
+
+        if (!ProfileModel.IsVersionSupported(profile.Version))
+            throw new NotSupportedException($"Profile schema version '{profile.Version}' is not supported. Supported versions: {string.Join(", ", ProfileModel.SupportedVersions)}.");
+
+        if (string.IsNullOrWhiteSpace(profile.Name))
+            throw new InvalidDataException($"Profile at '{filePath}' is missing a required name.");
 
         _logger?.Info($"Profile '{profile.Name}' loaded from '{filePath}' (Version: {profile.Version}, Mode: {profile.Mode})");
         return profile;
