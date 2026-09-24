@@ -481,7 +481,7 @@ $RECYCLE.BIN/
 # Vim temporary swap files
 *.swp
 
-# BackgroundClicker runtime profiles, logs, and publish outputs
+# BackgroundAutomator runtime profiles, logs, and publish outputs
 /profiles/
 /publish/
 /publish-output/

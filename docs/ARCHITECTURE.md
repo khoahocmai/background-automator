@@ -1,17 +1,17 @@
-# BackgroundClicker — System Architecture, Logic & Agent Guide
+# BackgroundAutomator — System Architecture, Logic & Agent Guide
 
-> **Document Purpose**: This document serves as the authoritative technical reference and architectural specification for the BackgroundClicker codebase. It is designed so that any AI agent or software engineer can read it and immediately understand the entire system architecture, subsystem mechanics, design invariants, data flows, and code conventions.
+> **Document Purpose**: This document serves as the authoritative technical reference and architectural specification for the BackgroundAutomator codebase. It is designed so that any AI agent or software engineer can read it and immediately understand the entire system architecture, subsystem mechanics, design invariants, data flows, and code conventions.
 
 ---
 
 ## 1. Executive Summary & Core Philosophy
 
-**BackgroundClicker** is a high-reliability Windows desktop utility built on **.NET 8 (C#)** and **WPF (Fluent Design)**, designed to inspect, target, and automate mouse clicks and macros on background or foreground application windows **without moving or hijacking the user's physical mouse cursor**.
+**BackgroundAutomator** is a high-reliability Windows desktop utility built on **.NET 8 (C#)** and **WPF (Fluent Design)**, designed to inspect, target, and automate mouse clicks and macros on background or foreground application windows **without moving or hijacking the user's physical mouse cursor**.
 
 ### Fundamental Philosophy & Non-Negotiable Invariants
 1. **Zero Physical Cursor Interference**: The application never calls `SetCursorPos` or `mouse_event` / `SendInput` to move the physical hardware cursor. All automation messages are injected directly into the target window's Win32 message queue via unmanaged `PostMessage`.
-2. **HWND-Bound Client Coordinates**: Screen coordinates are volatile and break when windows move or resize. In BackgroundClicker, all click and capture coordinates are strictly client coordinates bound to a specific window handle (`HWND`), where `(0, 0)` is the top-left corner of that specific control's client area.
-3. **Deepest Useful Child Target**: Rather than dispatching clicks to a top-level window and guessing where internal controls sit, BackgroundClicker recursively resolves the deepest child control HWND (e.g. button inside a panel inside a form).
+2. **HWND-Bound Client Coordinates**: Screen coordinates are volatile and break when windows move or resize. In BackgroundAutomator, all click and capture coordinates are strictly client coordinates bound to a specific window handle (`HWND`), where `(0, 0)` is the top-left corner of that specific control's client area.
+3. **Deepest Useful Child Target**: Rather than dispatching clicks to a top-level window and guessing where internal controls sit, BackgroundAutomator recursively resolves the deepest child control HWND (e.g. button inside a panel inside a form).
 4. **No Ephemeral Live HWNDs in Persistent Storage**: Window handles (`HWND`) are ephemeral operating system pointers that change every time an application restarts. Persistent profiles store durable **Target Descriptors** (Process Name, Window Class, Window Title, Title Match Mode, and Child Control Descriptors). Fresh HWNDs are dynamically re-resolved at runtime.
 5. **Strict GDI Resource Lifecycle**: All GDI device contexts, bitmaps, and selected objects created during background client-area captures are tracked and freed in reverse order of creation inside guarded `finally` blocks, preventing resource and handle leaks.
 
@@ -23,18 +23,18 @@ The solution follows a strict, unidirectional layered architecture:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  BackgroundClicker.App                      │
+│                  BackgroundAutomator.App                      │
 │   (WPF Fluent UI, MVVM ViewModels/Views, Hotkeys)           │
 └──────────────────────────────┬──────────────────────────────┘
                                │ references
 ┌──────────────────────────────▼──────────────────────────────┐
-│                  BackgroundClicker.Core                     │
+│                  BackgroundAutomator.Core                     │
 │  (Targeting, Coordinates, Clicking, Runners, Macro Engine,  │
 │   Window Capture, Profiles & Persistence, Security/UIPI)    │
 └──────────────────────────────┬──────────────────────────────┘
                                │ references
 ┌──────────────────────────────▼──────────────────────────────┐
-│                  BackgroundClicker.Win32                    │
+│                  BackgroundAutomator.Win32                    │
 │    (Centralized P/Invoke: User32, Gdi32, Kernel32, Advapi32,│
 │     Native Constants, Structs, Message Packing Helpers)     │
 └─────────────────────────────────────────────────────────────┘
@@ -42,19 +42,19 @@ The solution follows a strict, unidirectional layered architecture:
                   ┌────────────────────────┐
                   │    Test Ecosystem      │
                   ├────────────────────────┤
-                  │ BackgroundClicker.     │
+                  │ BackgroundAutomator.     │
                   │   TestTarget (WinForms)│
-                  │ BackgroundClicker.     │
+                  │ BackgroundAutomator.     │
                   │   Tests (xUnit / 140+) │
                   └────────────────────────┘
 ```
 
 ### Dependency Rules:
-- **`BackgroundClicker.Win32`** has **zero** dependencies on other solution projects. All native Win32 API declarations, structures (`POINT`, `RECT`), and flags live here. No other project may contain raw `[DllImport]` declarations.
-- **`BackgroundClicker.Core`** depends only on `BackgroundClicker.Win32`. It contains pure domain logic, background worker loops, serialization models, and abstractions. It has **no dependency** on `BackgroundClicker.App` or WinForms UI controls.
-- **`BackgroundClicker.App`** depends on `BackgroundClicker.Core` and `BackgroundClicker.Win32`. It hosts the WPF Fluent views, MVVM view models, data binding, and global keyboard hotkeys.
-- **`BackgroundClicker.TestTarget`** is an isolated, deterministic WinForms harness exposing verifiable controls, click counters, color panels, and a raw Windows message logger.
-- **`BackgroundClicker.Tests`** executes automated unit and integration tests against Core and real spawned processes of `TestTarget`.
+- **`BackgroundAutomator.Win32`** has **zero** dependencies on other solution projects. All native Win32 API declarations, structures (`POINT`, `RECT`), and flags live here. No other project may contain raw `[DllImport]` declarations.
+- **`BackgroundAutomator.Core`** depends only on `BackgroundAutomator.Win32`. It contains pure domain logic, background worker loops, serialization models, and abstractions. It has **no dependency** on `BackgroundAutomator.App` or WinForms UI controls.
+- **`BackgroundAutomator.App`** depends on `BackgroundAutomator.Core` and `BackgroundAutomator.Win32`. It hosts the WPF Fluent views, MVVM view models, data binding, and global keyboard hotkeys.
+- **`BackgroundAutomator.TestTarget`** is an isolated, deterministic WinForms harness exposing verifiable controls, click counters, color panels, and a raw Windows message logger.
+- **`BackgroundAutomator.Tests`** executes automated unit and integration tests against Core and real spawned processes of `TestTarget`.
 
 ---
 
@@ -62,8 +62,8 @@ The solution follows a strict, unidirectional layered architecture:
 
 ```
 src/
-├── BackgroundClicker.Win32/          # Native Interop Layer
-├── BackgroundClicker.Core/           # Core Domain & Logic
+├── BackgroundAutomator.Win32/          # Native Interop Layer
+├── BackgroundAutomator.Core/           # Core Domain & Logic
 │   ├── Capture/                      # GDI Window Capture & Color Inspection
 │   ├── Clicking/                     # PostMessage Background Click Engine
 │   ├── Coordinates/                  # Screen <-> Client Coordinate Translation
@@ -73,7 +73,7 @@ src/
 │   ├── Runner/                       # Asynchronous Simple Click Runner Loop
 │   ├── Security/                     # Process Elevation & UIPI Detection
 │   └── Targeting/                    # Window Inspection, Resolution & Descriptors
-└── BackgroundClicker.App/            # WPF Fluent Presentation Layer
+└── BackgroundAutomator.App/            # WPF Fluent Presentation Layer
     ├── Views/                        # Fluent Pages (Target, Simple, Macro, Profiles, Diag)
     ├── ViewModels/                   # CommunityToolkit MVVM ViewModels
     ├── Models/                       # Presentation-layer Models
@@ -82,14 +82,14 @@ src/
     └── Hotkeys/                      # System-wide Win32 Global Hotkeys (F6/F7)
 ```
 
-### 3.1. Win32 Native Interop Layer (`BackgroundClicker.Win32`)
+### 3.1. Win32 Native Interop Layer (`BackgroundAutomator.Win32`)
 
 Centralizes all unmanaged interop definitions and low-level bitwise helpers:
-- **[User32.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/User32.cs)**: Window enumeration (`EnumWindows`, `EnumChildWindows`), hierarchy inspection (`GetParent`, `GetAncestor`, `WindowFromPoint`, `RealChildWindowFromPoint`), coordinates (`ScreenToClient`, `ClientToScreen`, `GetClientRect`), messaging (`PostMessage`, `SendMessage`), capture (`PrintWindow`, `GetDC`, `ReleaseDC`, `IsHungAppWindow`), hotkeys (`RegisterHotKey`, `UnregisterHotKey`), DPI (`SetProcessDpiAwarenessContext`, `GetDpiForWindow`), and DWM (`DwmGetWindowAttribute` for `DWMWA_CLOAKED`).
-- **[Gdi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/Gdi32.cs)**: `CreateCompatibleDC`, `CreateCompatibleBitmap`, `SelectObject`, `DeleteObject`, `DeleteDC`.
-- **[Kernel32.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/Kernel32.cs)**: Process querying (`OpenProcess`, `CloseHandle`), thread information, error codes.
-- **[Advapi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/Advapi32.cs)**: Token security queries (`OpenProcessToken`, `GetTokenInformation`).
-- **[MouseMessageHelper.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/MouseMessageHelper.cs)**:
+- **[User32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/User32.cs)**: Window enumeration (`EnumWindows`, `EnumChildWindows`), hierarchy inspection (`GetParent`, `GetAncestor`, `WindowFromPoint`, `RealChildWindowFromPoint`), coordinates (`ScreenToClient`, `ClientToScreen`, `GetClientRect`), messaging (`PostMessage`, `SendMessage`), capture (`PrintWindow`, `GetDC`, `ReleaseDC`, `IsHungAppWindow`), hotkeys (`RegisterHotKey`, `UnregisterHotKey`), DPI (`SetProcessDpiAwarenessContext`, `GetDpiForWindow`), and DWM (`DwmGetWindowAttribute` for `DWMWA_CLOAKED`).
+- **[Gdi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Gdi32.cs)**: `CreateCompatibleDC`, `CreateCompatibleBitmap`, `SelectObject`, `DeleteObject`, `DeleteDC`.
+- **[Kernel32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Kernel32.cs)**: Process querying (`OpenProcess`, `CloseHandle`), thread information, error codes.
+- **[Advapi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Advapi32.cs)**: Token security queries (`OpenProcessToken`, `GetTokenInformation`).
+- **[MouseMessageHelper.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/MouseMessageHelper.cs)**:
   - Packs signed 16-bit coordinates into a 32-bit `LPARAM`:
     ```csharp
     uint low = (ushort)(short)x;
@@ -101,43 +101,43 @@ Centralizes all unmanaged interop definitions and low-level bitwise helpers:
     int x = unchecked((short)((long)lParam & 0xFFFF));
     int y = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
     ```
-- **[NativeTypes.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Win32/NativeTypes.cs)**: Value-type structs `POINT` and `RECT` with implicit conversions to/from `System.Drawing.Point` and `System.Drawing.Rectangle`.
+- **[NativeTypes.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/NativeTypes.cs)**: Value-type structs `POINT` and `RECT` with implicit conversions to/from `System.Drawing.Point` and `System.Drawing.Rectangle`.
 
 ---
 
-### 3.2. Targeting Subsystem (`BackgroundClicker.Core.Targeting`)
+### 3.2. Targeting Subsystem (`BackgroundAutomator.Core.Targeting`)
 
 Responsible for discovering, inspecting, and resolving target windows.
 
 #### Core Models & Services:
-1. **[TargetPoint](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/TargetPoint.cs)**:
+1. **[TargetPoint](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/TargetPoint.cs)**:
    - Immutable record pairing `IntPtr Hwnd`, `int ClientX`, and `int ClientY`.
    - Invariant: A coordinate point is meaningless without its associated window handle.
-2. **[WindowTarget](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/WindowTarget.cs)**:
+2. **[WindowTarget](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/WindowTarget.cs)**:
    - Rich snapshot of a live target: `RootHwnd`, `TargetHwnd`, `ParentHwnd`, `ProcessId`, `ThreadId`, `ProcessName`, `WindowTitle`, `WindowClass`, `ScreenBounds`, `ClientBounds`.
    - Computes friendly display names for the UI.
-3. **[WindowTargetService](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/WindowTargetService.cs)**:
+3. **[WindowTargetService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/WindowTargetService.cs)**:
    - `EnumerateTopLevelWindows`: Uses `User32.EnumWindows` to find visible, uncloaked windows with non-empty titles.
    - `ResolveTargetFromScreenPoint(POINT screenPoint)`:
      - Uses `User32.WindowFromPoint` to find the window under the cursor.
      - Resolves the root top-level window via `User32.GetAncestor(GA_ROOT)`.
      - Recursively drills down via `User32.RealChildWindowFromPoint` and `ChildWindowFromPointEx` to locate the deepest nested child control (button, edit box, panel) at that screen coordinate.
-4. **[TargetDescriptor](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/TargetDescriptor.cs)** & **`ChildTargetDescriptor`**:
+4. **[TargetDescriptor](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/TargetDescriptor.cs)** & **`ChildTargetDescriptor`**:
    - The persistent representation of a target.
    - Captures `ProcessName`, `WindowTitle`, `WindowClass`, `TitleMatchMode` (`Exact`, `Contains`, `StartsWith`, `Any`), and optional child control selectors (`ControlClass`, `ControlText`, `ControlIndex`).
    - Guarantees zero live HWND storage.
-5. **[TargetResolver](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/TargetResolver.cs)**:
+5. **[TargetResolver](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/TargetResolver.cs)**:
    - Resolves a `TargetDescriptor` back into a live `TargetResolutionResult`.
    - **Ambiguity Detection**: If multiple running top-level windows match the criteria, returns `TargetResolutionStatus.Ambiguous` with the list of candidates, preventing accidental click dispatch to the wrong window.
    - If a child descriptor is present, uses `User32.EnumChildWindows` to find and index matching child controls.
-6. **[HwndFormatter](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Targeting/HwndFormatter.cs)**:
+6. **[HwndFormatter](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Targeting/HwndFormatter.cs)**:
    - Formats `IntPtr` as an explicit 16-character 64-bit hex string (`0x00000000001203AA`), preventing 32-bit truncation errors on x64 platforms.
 
 ---
 
-### 3.3. Coordinate Subsystem (`BackgroundClicker.Core.Coordinates`)
+### 3.3. Coordinate Subsystem (`BackgroundAutomator.Core.Coordinates`)
 
-- **[CoordinateService](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Coordinates/CoordinateService.cs)**:
+- **[CoordinateService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Coordinates/CoordinateService.cs)**:
   - Translates between global screen coordinates and window client coordinates via `User32.ScreenToClient` and `User32.ClientToScreen`.
   - Verifies coordinate round-trip consistency (`Screen -> Client -> Screen`).
   - Correctly supports multi-monitor setups where secondary monitors sit at negative virtual desktop coordinates (e.g. `X = -1920, Y = -1080`).
@@ -147,10 +147,10 @@ Responsible for discovering, inspecting, and resolving target windows.
 
 ---
 
-### 3.4. Background Clicking Engine (`BackgroundClicker.Core.Clicking`)
+### 3.4. Background Clicking Engine (`BackgroundAutomator.Core.Clicking`)
 
-- **[IBackgroundClicker](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Clicking/IBackgroundClicker.cs)**: Contract defining `Click(TargetPoint)` and `DoubleClick(TargetPoint)`.
-- **[BackgroundClickerEngine](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Clicking/BackgroundClickerEngine.cs)**:
+- **[IBackgroundAutomator](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Clicking/IBackgroundAutomator.cs)**: Contract defining `Click(TargetPoint)` and `DoubleClick(TargetPoint)`.
+- **[BackgroundClickerEngine](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Clicking/BackgroundClickerEngine.cs)**:
   - Validates `User32.IsWindow(target.Hwnd)`.
   - Encodes `(ClientX, ClientY)` into `lParam` using `MouseMessageHelper.MakeMouseLParam`.
   - Dispatches non-blocking asynchronous messages using `User32.PostMessage`:
@@ -170,9 +170,9 @@ Responsible for discovering, inspecting, and resolving target windows.
 
 ---
 
-### 3.5. Simple Click Runner Subsystem (`BackgroundClicker.Core.Runner`)
+### 3.5. Simple Click Runner Subsystem (`BackgroundAutomator.Core.Runner`)
 
-- **[ClickRunner](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Runner/ClickRunner.cs)**:
+- **[ClickRunner](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Runner/ClickRunner.cs)**:
   - Manages sequential execution of an ordered list of `ClickPoint`s.
   - Thread-safe lifecycle state machine:
     $$\text{Idle} \xrightarrow{\text{Start()}} \text{Running} \xrightarrow{\text{Stop()}} \text{Stopping} \rightarrow \text{Idle}$$
@@ -186,7 +186,7 @@ Responsible for discovering, inspecting, and resolving target windows.
 
 ---
 
-### 3.6. Macro Engine Subsystem (`BackgroundClicker.Core.Macro`)
+### 3.6. Macro Engine Subsystem (`BackgroundAutomator.Core.Macro`)
 
 A composable, sequential pipeline for multi-step automation tasks:
 
@@ -207,17 +207,17 @@ A composable, sequential pipeline for multi-step automation tasks:
 ```
 
 #### Core Classes:
-- **[IMacroAction](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/IMacroAction.cs)**:
+- **[IMacroAction](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/IMacroAction.cs)**:
   - Base interface requiring `ExecuteAsync(MacroExecutionContext context, CancellationToken ct)`.
-- **[MacroExecutionContext](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/MacroExecutionContext.cs)**:
-  - Dependency bag injected into each action: `IBackgroundClicker Clicker`, `IWindowCaptureService CaptureService`, and `IntPtr TargetHwnd`.
-- **[MacroActionResult](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/MacroActionResult.cs)**:
+- **[MacroExecutionContext](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/MacroExecutionContext.cs)**:
+  - Dependency bag injected into each action: `IBackgroundAutomator Clicker`, `IWindowCaptureService CaptureService`, and `IntPtr TargetHwnd`.
+- **[MacroActionResult](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/MacroActionResult.cs)**:
   - Status enum `MacroActionStatus`: `Success`, `Failed`, `TimedOut`, `Cancelled`, `TargetUnavailable`, `CaptureFailed`.
 - **Macro Actions**:
-  - **[ClickAction](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/ClickAction.cs)**: Executes single click at `(X, Y)`.
-  - **[DoubleClickAction](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/DoubleClickAction.cs)**: Executes double click at `(X, Y)`.
-  - **[DelayAction](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/DelayAction.cs)**: Non-blocking asynchronous delay.
-  - **[WaitColorAction](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/WaitColorAction.cs)**:
+  - **[ClickAction](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/ClickAction.cs)**: Executes single click at `(X, Y)`.
+  - **[DoubleClickAction](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/DoubleClickAction.cs)**: Executes double click at `(X, Y)`.
+  - **[DelayAction](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/DelayAction.cs)**: Non-blocking asynchronous delay.
+  - **[WaitColorAction](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/WaitColorAction.cs)**:
     - Repeatedly captures client area via `CaptureService.CaptureClientAreaAsync`.
     - Samples pixel at client coordinates `(X, Y)`.
     - Compares with `ExpectedColor` using per-channel RGB `Tolerance`:
@@ -225,7 +225,7 @@ A composable, sequential pipeline for multi-step automation tasks:
     - Polls at configurable interval (default 100ms) until match or `TimeoutMilliseconds` expires.
     - If target window closes, returns `TargetUnavailable`.
     - If capture fails (e.g. target hung), returns `CaptureFailed`.
-- **[MacroRunner](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Macro/MacroRunner.cs)**:
+- **[MacroRunner](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Macro/MacroRunner.cs)**:
   - Orchestrates execution of `IReadOnlyList<IMacroAction>`.
   - Supports linked external cancellation tokens.
   - Short-circuits immediately if an action fails, cancels, or times out.
@@ -233,7 +233,7 @@ A composable, sequential pipeline for multi-step automation tasks:
 
 ---
 
-### 3.7. Window Capture & Color Inspection Subsystem (`BackgroundClicker.Core.Capture`)
+### 3.7. Window Capture & Color Inspection Subsystem (`BackgroundAutomator.Core.Capture`)
 
 Captures the visual appearance of background windows without bringing them to the foreground.
 
@@ -261,15 +261,15 @@ To avoid leaking GDI and USER handles (which causes Windows desktop crashes when
 
 ---
 
-### 3.8. Profile Persistence & Storage Subsystem (`BackgroundClicker.Core.Profiles`)
+### 3.8. Profile Persistence & Storage Subsystem (`BackgroundAutomator.Core.Profiles`)
 
 Handles saving and loading automation configurations to disk.
 
 #### File Storage Location:
 Profiles are stored as formatted JSON files in:
-`%LOCALAPPDATA%\BackgroundClicker\profiles\<profile_name>.json`
+`%LOCALAPPDATA%\BackgroundAutomator\profiles\<profile_name>.json`
 
-#### Durable Schema ([ProfileModel.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Profiles/ProfileModel.cs)):
+#### Durable Schema ([ProfileModel.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Profiles/ProfileModel.cs)):
 ```json
 {
   "name": "MyAutomationProfile",
@@ -304,7 +304,7 @@ Profiles are stored as formatted JSON files in:
 }
 ```
 
-#### Atomic File Writes ([ProfileStorageService.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Profiles/ProfileStorageService.cs)):
+#### Atomic File Writes ([ProfileStorageService.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Profiles/ProfileStorageService.cs)):
 To prevent profile corruption during sudden application termination or power loss:
 1. Serializes JSON to a unique temporary file (`<guid>.tmp`) with `FileOptions.WriteThrough`.
 2. Flushes file streams to disk (`Flush(flushToDisk: true)`).
@@ -314,16 +314,16 @@ To prevent profile corruption during sudden application termination or power los
 
 ---
 
-### 3.9. Security & UIPI Privilege Diagnostics (`BackgroundClicker.Core.Security`)
+### 3.9. Security & UIPI Privilege Diagnostics (`BackgroundAutomator.Core.Security`)
 
-Windows enforces **User Interface Privilege Isolation (UIPI)**. Under UIPI, Windows blocks lower-integrity processes (e.g. non-elevated BackgroundClicker) from sending window messages (`WM_LBUTTONDOWN`, `WM_LBUTTONUP`) to higher-integrity processes (e.g. an application running as Administrator). The messages are silently discarded by the Windows kernel without returning an error code.
+Windows enforces **User Interface Privilege Isolation (UIPI)**. Under UIPI, Windows blocks lower-integrity processes (e.g. non-elevated BackgroundAutomator) from sending window messages (`WM_LBUTTONDOWN`, `WM_LBUTTONUP`) to higher-integrity processes (e.g. an application running as Administrator). The messages are silently discarded by the Windows kernel without returning an error code.
 
-- **[ProcessElevationService](file:///d:/personal-project/background-clicker/src/BackgroundClicker.Core/Security/ProcessElevationService.cs)**:
-  - Queries `WindowsIdentity.GetCurrent()` to check if BackgroundClicker is elevated.
+- **[ProcessElevationService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Security/ProcessElevationService.cs)**:
+  - Queries `WindowsIdentity.GetCurrent()` to check if BackgroundAutomator is elevated.
   - Queries the target process token via `Kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `Advapi32.OpenProcessToken(TOKEN_QUERY)` + `Advapi32.GetTokenInformation(TokenElevation)`.
   - Produces an `ElevationCheckResult`:
-    - `Compatible`: Both non-elevated or BackgroundClicker is elevated.
-    - `UipiMismatch`: Target is Admin but BackgroundClicker is non-admin. Triggers UI warnings.
+    - `Compatible`: Both non-elevated or BackgroundAutomator is elevated.
+    - `UipiMismatch`: Target is Admin but BackgroundAutomator is non-admin. Triggers UI warnings.
     - `Unknown`: Access denied or protected system process.
 - **UI Action**:
   - The UI displays an amber warning badge when a UIPI mismatch occurs.
@@ -331,7 +331,7 @@ Windows enforces **User Interface Privilege Isolation (UIPI)**. Under UIPI, Wind
 
 ---
 
-### 3.10. Application UI & Global Hotkeys (`BackgroundClicker.App`)
+### 3.10. Application UI & Global Hotkeys (`BackgroundAutomator.App`)
 
 - **WPF Fluent Presentation Layer (`MainWindow.xaml`, `Views/`, `ViewModels/`)**:
   - Organized with Fluent sidebar navigation (`Wpf.Ui.Controls.NavigationView`): **Target**, **Click Sequence**, **Macro**, **Profiles**, and **Diagnostics**.
@@ -342,12 +342,12 @@ Windows enforces **User Interface Privilege Isolation (UIPI)**. Under UIPI, Wind
     - Coordinates and candidate details are previewed in real-time.
     - When the mouse button is released, locks onto the resolved target, checks UIPI compatibility, and updates all views.
   - Persistent bottom status bar showing current target, runner status, and hotkey hints.
-- **[GlobalHotkeyManager.cs](file:///d:/personal-project/background-clicker/src/BackgroundClicker.App/Hotkeys/GlobalHotkeyManager.cs)**:
+- **[GlobalHotkeyManager.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.App/Hotkeys/GlobalHotkeyManager.cs)**:
   - Registers system-wide hotkeys via `User32.RegisterHotKey`:
     - **F6** (`HotkeyId = 1001`): Start / Stop active runner (Simple or Macro).
     - **F7** (`HotkeyId = 1002`): Emergency Stop (instantly halts any running loop).
   - Listens for `WM_HOTKEY` via `HwndSource` message hook in `MainWindow`.
-  - Works even when BackgroundClicker is minimized or another application has focus.
+  - Works even when BackgroundAutomator is minimized or another application has focus.
   - Gracefully handles conflicts if another application has already registered F6 or F7.
 
 ---
@@ -488,14 +488,14 @@ sequenceDiagram
 
 | Project / Directory | File | Single Responsibility |
 | :--- | :--- | :--- |
-| **`BackgroundClicker.Win32`** | `User32.cs` | Win32 windowing, messaging, capture, and hook P/Invoke signatures |
+| **`BackgroundAutomator.Win32`** | `User32.cs` | Win32 windowing, messaging, capture, and hook P/Invoke signatures |
 | | `Gdi32.cs` | GDI context and bitmap allocation/deletion P/Invoke signatures |
 | | `Kernel32.cs` | Win32 process handles and thread query P/Invoke signatures |
 | | `Advapi32.cs` | Windows security tokens and elevation P/Invoke signatures |
 | | `MouseMessageHelper.cs` | Signed 16-bit `LPARAM` coordinate packing and unpacking |
 | | `NativeConstants.cs` | Centralized constants (`WM_*`, `MK_*`, `PW_*`, `DWMWA_*`, etc.) |
 | | `NativeTypes.cs` | `POINT` and `RECT` interop structs with implicit conversions |
-| **`BackgroundClicker.Core`** | `Targeting/WindowTargetService.cs` | Window enumeration and recursive screen-to-child HWND resolution |
+| **`BackgroundAutomator.Core`** | `Targeting/WindowTargetService.cs` | Window enumeration and recursive screen-to-child HWND resolution |
 | | `Targeting/TargetPoint.cs` | Immutable `(HWND, ClientX, ClientY)` coordinate model |
 | | `Targeting/TargetDescriptor.cs` | Durable persistent target metadata without ephemeral HWNDs |
 | | `Targeting/TargetResolver.cs` | Re-resolves target descriptors to live HWNDs with ambiguity detection |
@@ -508,14 +508,14 @@ sequenceDiagram
 | | `Capture/WindowCapture.cs` | Managed bitmap wrapper with color tolerance math |
 | | `Profiles/ProfileStorageService.cs` | Atomic `.tmp`-to-replace profile storage in `%LOCALAPPDATA%` |
 | | `Security/ProcessElevationService.cs` | UIPI diagnostics and process token elevation queries |
-| **`BackgroundClicker.App`** | `App.xaml` / `App.xaml.cs` | Application entry, DPI initialization (`PerMonitorV2`), Fluent theme loading |
+| **`BackgroundAutomator.App`** | `App.xaml` / `App.xaml.cs` | Application entry, DPI initialization (`PerMonitorV2`), Fluent theme loading |
 | | `app.manifest` | Declares DPI awareness (`PerMonitorV2`) to Windows OS |
 | | `MainWindow.xaml` | Shell window hosting Fluent `NavigationView` and status strip |
 | | `Views/` | Fluent pages: `TargetPage`, `SimplePage`, `MacroPage`, `ProfilesPage`, `DiagnosticsPage` |
 | | `ViewModels/` | MVVM view models for each page and main application state |
 | | `Hotkeys/GlobalHotkeyManager.cs` | Registers and handles system-wide `F6` and `F7` hotkeys |
-| **`BackgroundClicker.TestTarget`**| `Forms/TestTargetForm.cs` | Real test harness with click counters, message log, and color panels |
-| **`BackgroundClicker.Tests`** | `WindowCaptureIntegrationTests.cs` | Validates GDI capture against real `TestTarget` |
+| **`BackgroundAutomator.TestTarget`**| `Forms/TestTargetForm.cs` | Real test harness with click counters, message log, and color panels |
+| **`BackgroundAutomator.Tests`** | `WindowCaptureIntegrationTests.cs` | Validates GDI capture against real `TestTarget` |
 | | `MacroIntegrationTests.cs` | End-to-end macro execution and `WaitColor` verification |
 | | `ResourceSoakTests.cs` | 5,000-iteration leak tests verifying zero GDI and USER handle leaks |
 | | `TargetRestartIntegrationTests.cs`| Verifies profile reload and HWND re-resolution across process restarts |
@@ -534,7 +534,7 @@ When explaining or diagnosing targeting behavior, keep these platform realities 
 3. **Hardware-Polled Applications & DirectInput Games**:
    - Games utilizing DirectInput, Raw Input, or exclusive-mode DirectX/Vulkan surfaces bypass the Windows message queue entirely and read directly from USB hardware drivers. Window-level `PostMessage` calls will be ignored by these targets.
 4. **UIPI (User Interface Privilege Isolation)**:
-   - If the target application is running as Administrator, BackgroundClicker must also be run as Administrator; otherwise, Windows kernel will drop the click messages.
+   - If the target application is running as Administrator, BackgroundAutomator must also be run as Administrator; otherwise, Windows kernel will drop the click messages.
 
 ---
 
@@ -542,37 +542,37 @@ When explaining or diagnosing targeting behavior, keep these platform realities 
 
 ### Build Solution
 ```powershell
-dotnet build BackgroundClicker.sln
+dotnet build BackgroundAutomator.sln
 ```
 
 ### Run Full Test Suite (140 tests)
 ```powershell
-dotnet test BackgroundClicker.sln
+dotnet test BackgroundAutomator.sln
 ```
 
 ### Run Targeted Test Fixtures
 ```powershell
 # GDI and USER handle leak soak tests (5,000 iterations)
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
 
 # End-to-end macro and WaitColor tests
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~MacroIntegrationTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~MacroIntegrationTests"
 
 # Re-resolution across target restarts
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~TargetRestartIntegrationTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~TargetRestartIntegrationTests"
 ```
 
 ### Run Applications
 ```powershell
-# Run BackgroundClicker
-dotnet run --project src/BackgroundClicker.App/BackgroundClicker.App.csproj
+# Run BackgroundAutomator
+dotnet run --project src/BackgroundAutomator.App/BackgroundAutomator.App.csproj
 
 # Run TestTarget Bench
-dotnet run --project tests/BackgroundClicker.TestTarget/BackgroundClicker.TestTarget.csproj
+dotnet run --project tests/BackgroundAutomator.TestTarget/BackgroundAutomator.TestTarget.csproj
 ```
 
 ### Publish Portable Self-Contained Binary
 ```powershell
-dotnet publish src/BackgroundClicker.App/BackgroundClicker.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
+dotnet publish src/BackgroundAutomator.App/BackgroundAutomator.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
 ```
-Produces single-file executable at `./publish/BackgroundClicker.App.exe` with zero external dependencies.
+Produces single-file executable at `./publish/BackgroundAutomator.App.exe` with zero external dependencies.

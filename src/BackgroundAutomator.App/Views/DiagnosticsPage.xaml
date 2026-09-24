@@ -1,0 +1,80 @@
+<Page x:Class="BackgroundAutomator.App.Views.DiagnosticsPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:converters="clr-namespace:BackgroundAutomator.App.Converters"
+      Title="DiagnosticsPage">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Top Controls Bar -->
+        <ui:Card Grid.Row="0" Padding="12" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="130" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Level Filter:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                <ComboBox Grid.Column="1"
+                          ItemsSource="{Binding FilterOptions}"
+                          SelectedItem="{Binding SelectedFilter, Mode=TwoWay}"
+                          VerticalAlignment="Center" />
+
+                <CheckBox Grid.Column="2"
+                          Content="Auto-scroll"
+                          IsChecked="{Binding AutoScroll, Mode=TwoWay}"
+                          Margin="20,0,0,0"
+                          VerticalAlignment="Center" />
+
+                <ui:Button Grid.Column="4"
+                           Content="Clear Log"
+                           Icon="{ui:SymbolIcon Delete24}"
+                           Command="{Binding ClearLogCommand}"
+                           VerticalAlignment="Center" />
+            </Grid>
+        </ui:Card>
+
+        <!-- Log Viewer List -->
+        <ui:Card Grid.Row="1" Padding="12">
+            <ListBox x:Name="LogListBox"
+                     ItemsSource="{Binding FilteredEntries}"
+                     FontFamily="Consolas"
+                     FontSize="12"
+                     HorizontalContentAlignment="Stretch"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                <ListBox.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,2">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="55" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding TimestampFormatted}"
+                                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding LevelString}"
+                                       Foreground="{Binding LevelColor}"
+                                       FontWeight="Bold" />
+
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding Message}"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+        </ui:Card>
+    </Grid>
+</Page>

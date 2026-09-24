@@ -1,0 +1,120 @@
+<Page x:Class="BackgroundAutomator.App.Views.ProfilesPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+      xmlns:converters="clr-namespace:BackgroundAutomator.App.Converters"
+      Title="ProfilesPage">
+    <Page.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVis" />
+    </Page.Resources>
+
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Section 1: Profile Configuration & Actions -->
+        <ui:Card Grid.Row="0" Padding="16" Margin="0,0,0,14">
+            <StackPanel>
+                <TextBlock Text="Profile Configuration &amp; Target Re-Resolution"
+                           FontSize="16"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,12" />
+
+                <!-- Profile Name and Mode -->
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="Profile Name:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                    <ui:TextBox Grid.Column="1" Text="{Binding ProfileName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,24,0" />
+
+                    <TextBlock Grid.Column="2" Text="Mode:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                    <ComboBox Grid.Column="3" SelectedIndex="{Binding SelectedModeIndex, Mode=TwoWay}">
+                        <ComboBoxItem Content="Simple Mode" />
+                        <ComboBoxItem Content="Macro Mode" />
+                    </ComboBox>
+                </Grid>
+
+                <!-- Target Descriptor Display -->
+                <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,8"
+                        Margin="0,0,0,14">
+                    <TextBlock Text="{Binding TargetDescriptorText}"
+                               FontWeight="Medium"
+                               Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                               TextTrimming="CharacterEllipsis" />
+                </Border>
+
+                <!-- Actions Row -->
+                <StackPanel Orientation="Horizontal">
+                    <ui:Button Content="💾 Save Profile"
+                               Appearance="Primary"
+                               Command="{Binding SaveProfileCommand}"
+                               Margin="0,0,8,0" />
+                    <ui:Button Content="📂 Load Profile"
+                               Appearance="Secondary"
+                               Command="{Binding LoadSelectedProfileCommand}"
+                               Margin="0,0,8,0" />
+                    <ui:Button Content="🔄 Re-resolve Target"
+                               Appearance="Secondary"
+                               Command="{Binding ReResolveTargetCommand}"
+                               Margin="0,0,8,0" />
+                    <ui:Button Content="🗑 Delete Profile"
+                               Appearance="Danger"
+                               Command="{Binding DeleteSelectedProfileCommand}" />
+                </StackPanel>
+            </StackPanel>
+        </ui:Card>
+
+        <!-- Section 2: Saved Profiles List -->
+        <ui:Card Grid.Row="1" Padding="16">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Saved Profiles"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <ui:Button Grid.Column="1"
+                               Content="Refresh"
+                               Icon="{ui:SymbolIcon ArrowClockwise24}"
+                               Command="{Binding RefreshProfilesCommand}" />
+                </Grid>
+
+                <ListView Grid.Row="1"
+                          ItemsSource="{Binding Profiles}"
+                          SelectedItem="{Binding SelectedProfile, Mode=TwoWay}"
+                          MouseDoubleClick="OnProfilesListMouseDoubleClick">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Profile Name" Width="180" DisplayMemberBinding="{Binding Name}" />
+                            <GridViewColumn Header="Mode" Width="90" DisplayMemberBinding="{Binding ModeString}" />
+                            <GridViewColumn Header="Target Process / Window" Width="260" DisplayMemberBinding="{Binding TargetDescription}" />
+                            <GridViewColumn Header="Items" Width="70" DisplayMemberBinding="{Binding ItemCount}" />
+                            <GridViewColumn Header="Last Updated" Width="160" DisplayMemberBinding="{Binding UpdatedAtFormatted}" />
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </Grid>
+        </ui:Card>
+    </Grid>
+</Page>

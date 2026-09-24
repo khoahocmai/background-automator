@@ -1,4 +1,4 @@
-# BackgroundClicker Development Phases
+# BackgroundAutomator Development Phases
 
 ## Project goal
 
@@ -48,7 +48,7 @@ Status: COMPLETE
 
 Scope:
 
-- IBackgroundClicker
+- IBackgroundAutomator
 - PostMessage mouse engine
 - single click
 - double click
@@ -121,20 +121,20 @@ Scope:
   - Target hung-state detection via `User32.IsHungAppWindow` pre-check
   - Single-flight capture gate (`SemaphoreSlim(1, 1)`) preventing accumulation of worker threads on sluggish targets
   - Explicit `CaptureFailed` and `TargetUnavailable` status propagation in `WaitColorAction` and runner short-circuiting
-- Durable Target Descriptors & Re-resolution (`BackgroundClicker.Core.Targeting`):
+- Durable Target Descriptors & Re-resolution (`BackgroundAutomator.Core.Targeting`):
   - `TargetDescriptor` capturing `ProcessName`, `WindowTitle`, `WindowClass`, and `TitleMatchMode`
   - `ChildTargetDescriptor` capturing child control class, text, and index
   - Invariant enforced: No ephemeral live HWND handles are ever stored in persistent profiles
   - `TargetResolver` supporting Exact, Contains, StartsWith, and Any title matching
   - Ambiguous target detection when multiple windows match, preventing unintended click dispatch
   - Child control re-resolution via Win32 `EnumChildWindows`
-- Profile persistence & storage (`BackgroundClicker.Core.Profiles`):
+- Profile persistence & storage (`BackgroundAutomator.Core.Profiles`):
   - `ProfileModel` with schema versioning (`1.0`), timestamps, mode (`Simple` or `Macro`), settings, and points/actions
   - `ProfileStorageService` with atomic file writes (write-to-temporary `.tmp` + flush + `File.Move` overwrite)
   - Corruption-resilient profile listing (`ListProfiles`) that skips damaged JSON without crashing
-- Privilege / UIPI diagnostics (`BackgroundClicker.Core.Security`):
+- Privilege / UIPI diagnostics (`BackgroundAutomator.Core.Security`):
   - `ProcessElevationService` querying process tokens via `OpenProcessToken` and `GetTokenInformation(TokenElevation)`
-  - Detection of User Interface Privilege Isolation (UIPI) mismatches (non-elevated BackgroundClicker targeting elevated process)
+  - Detection of User Interface Privilege Isolation (UIPI) mismatches (non-elevated BackgroundAutomator targeting elevated process)
   - UI warning badges and "Restart as Administrator" UX action
 - Multi-monitor & negative coordinate support:
   - Signed Win32 coordinate translations verified for secondary displays located above or to the left of primary display
@@ -146,7 +146,7 @@ Scope:
 - Portable self-contained release publishing:
   - Target runtime: `win-x64`
   - `PublishSingleFile=true`, `PublishTrimmed=false`, `--self-contained true`
-  - Smoke-tested executable runs successfully out of `./publish/BackgroundClicker.App.exe`
+  - Smoke-tested executable runs successfully out of `./publish/BackgroundAutomator.App.exe`
 - Automated test coverage:
   - 140 unit and integration tests passing across all test fixtures
 
@@ -157,7 +157,7 @@ Definition of Done:
 - target lifecycle is robust (hung window detection, capture throttling, and target closure handled)
 - idle CPU is near zero (timer-based non-blocking execution)
 - long-running loop has no abnormal memory growth (verified by 5,000-iteration GDI resource soak test)
-- portable BackgroundClicker.exe is produced and verified (153MB self-contained single-file binary)
+- portable BackgroundAutomator.exe is produced and verified (153MB self-contained single-file binary)
 
 ---
 
@@ -165,7 +165,7 @@ Definition of Done:
 
 When a native Win32 API call such as `PrintWindow` or synchronous window message dispatch enters unmanaged Windows kernel mode, a managed .NET `CancellationToken` cannot forcibly terminate or abort the in-flight Win32 call without risking process corruption.
 
-To guarantee system stability and responsiveness, BackgroundClicker implements a defense-in-depth architecture:
+To guarantee system stability and responsiveness, BackgroundAutomator implements a defense-in-depth architecture:
 1. **Pre-Check Responsiveness**: `User32.IsHungAppWindow(hWnd)` pre-checks target responsiveness before calling `PrintWindow`, immediately skipping hung applications.
 2. **Worker Thread Isolation**: All captures execute asynchronously on worker threads via `CaptureClientAreaAsync`, ensuring the UI message pump and main thread are never blocked.
 3. **Single-Flight Concurrency Throttling**: A single-flight gate (`SemaphoreSlim(1, 1)`) with `WaitAsync(0, ct)` prevents backlog accumulation. If a previous capture is still executing, subsequent capture requests are dropped or safely rejected without spawning an unbounded number of worker threads.
@@ -186,33 +186,33 @@ The following features were identified during development but intentionally omit
 
 ### 1. Build Solution
 ```powershell
-dotnet build BackgroundClicker.sln
+dotnet build BackgroundAutomator.sln
 ```
 
 ### 2. Run Test Suite
 ```powershell
-dotnet test BackgroundClicker.sln
+dotnet test BackgroundAutomator.sln
 ```
 Or run specific test fixtures:
 ```powershell
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~MacroIntegrationTests"
-dotnet test tests/BackgroundClicker.Tests/BackgroundClicker.Tests.csproj --filter "FullyQualifiedName~TargetRestartIntegrationTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~MacroIntegrationTests"
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~TargetRestartIntegrationTests"
 ```
 
 ### 3. Run TestTarget (Deterministic Target Application)
 ```powershell
-dotnet run --project tests/BackgroundClicker.TestTarget/BackgroundClicker.TestTarget.csproj
+dotnet run --project tests/BackgroundAutomator.TestTarget/BackgroundAutomator.TestTarget.csproj
 ```
 
-### 4. Run BackgroundClicker App in Development Mode
+### 4. Run BackgroundAutomator App in Development Mode
 ```powershell
-dotnet run --project src/BackgroundClicker.App/BackgroundClicker.App.csproj
+dotnet run --project src/BackgroundAutomator.App/BackgroundAutomator.App.csproj
 ```
 
 ### 5. Build Portable Single-File Release
 ```powershell
-dotnet publish src/BackgroundClicker.App/BackgroundClicker.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
+dotnet publish src/BackgroundAutomator.App/BackgroundAutomator.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
 ```
 
 ---

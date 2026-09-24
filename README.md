@@ -1,6 +1,6 @@
-# BackgroundClicker
+# BackgroundAutomator
 
-BackgroundClicker is a Windows desktop utility designed for targeting, inspecting, and automating interactions with background and foreground application windows without moving the physical mouse cursor.
+BackgroundAutomator is a Windows desktop utility designed for targeting, inspecting, and automating interactions with background and foreground application windows without moving the physical mouse cursor.
 
 ## Documentation
 
@@ -18,7 +18,7 @@ Phase 4 hardens the entire system: off-UI-thread capture execution, hung-target 
 ### Key Capabilities in Phase 4
 * **Window Capture Hardening**: Background client-area captures execute asynchronously on the thread pool with `CaptureClientAreaAsync`, guarded by `IsHungAppWindow` and a controlled single-flight gate (`SemaphoreSlim(1,1)`).
 * **Durable Target Descriptors & Re-resolution**: Profiles store persistent descriptors (ProcessName, WindowTitle, WindowClass, MatchMode, ChildDescriptor) rather than ephemeral live HWNDs, re-resolving fresh handles across app restarts with ambiguity detection.
-* **Atomic Profile Persistence**: Profiles are saved atomically via temporary file writes and replacements in `%LOCALAPPDATA%\BackgroundClicker\profiles\`. Damaged profiles are isolated without impacting enumeration.
+* **Atomic Profile Persistence**: Profiles are saved atomically via temporary file writes and replacements in `%LOCALAPPDATA%\BackgroundAutomator\profiles\`. Damaged profiles are isolated without impacting enumeration.
 * **UIPI & Privilege Diagnostics**: Active target processes are queried for elevation tokens (`OpenProcessToken`, `TokenElevation`), surfacing UI warnings and a one-click "Restart as Administrator" option when privilege mismatches would drop click messages.
 * **Multi-Monitor Support**: Verified signed 32-bit Win32 coordinate translations for secondary monitors positioned at negative virtual desktop coordinates.
 * **Resource Soak Verified**: GDI and USER handle allocations verified leak-free across 500+ rapid capture cycles using Win32 `GetGuiResources`.
@@ -29,16 +29,16 @@ Phase 4 hardens the entire system: off-UI-thread capture execution, hung-target 
 ## Solution Architecture & Repository Structure
 
 ```text
-BackgroundClicker/
-├── BackgroundClicker.sln
+BackgroundAutomator/
+├── BackgroundAutomator.sln
 ├── src/
-│   ├── BackgroundClicker.App/
+│   ├── BackgroundAutomator.App/
 │   │   ├── Forms/
 │   │   │   └── MainForm.cs              # Target Inspector UI & Crosshair interaction
 │   │   ├── Program.cs                   # Entry point with PerMonitorV2 initialization
 │   │   └── app.manifest                 # OS-level PerMonitorV2 manifest
 │   │
-│   ├── BackgroundClicker.Core/
+│   ├── BackgroundAutomator.Core/
 │   │   ├── Coordinates/
 │   │   │   └── CoordinateService.cs     # Screen/Client coordinate translations & round-trip validation
 │   │   ├── Logging/
@@ -50,7 +50,7 @@ BackgroundClicker/
 │   │       ├── WindowTargetCandidate.cs # Dropdown candidate metadata
 │   │       └── WindowTargetService.cs   # EnumWindows & recursive child HWND resolution
 │   │
-│   └── BackgroundClicker.Win32/
+│   └── BackgroundAutomator.Win32/
 │       ├── NativeConstants.cs           # Centralized Win32 message, style, and flag constants
 │       ├── NativeTypes.cs               # POINT, RECT, Enum delegates
 │       ├── User32.cs                    # P/Invoke definitions for user32.dll & dwmapi.dll
@@ -58,14 +58,14 @@ BackgroundClicker/
 │       └── Gdi32.cs                     # P/Invoke definitions for gdi32.dll
 │
 ├── tests/
-│   ├── BackgroundClicker.Tests/         # Comprehensive xUnit unit & integration tests
-│   └── BackgroundClicker.TestTarget/    # Deterministic WinForms target application with message logging
+│   ├── BackgroundAutomator.Tests/         # Comprehensive xUnit unit & integration tests
+│   └── BackgroundAutomator.TestTarget/    # Deterministic WinForms target application with message logging
 │
 └── README.md
 ```
 
 ### Core Invariants & Architecture Decisions
-1. **Centralized Win32 Layer**: All P/Invoke signatures and native structs reside strictly in `BackgroundClicker.Win32`. No `[DllImport]` statements exist in Forms or Core business logic.
+1. **Centralized Win32 Layer**: All P/Invoke signatures and native structs reside strictly in `BackgroundAutomator.Win32`. No `[DllImport]` statements exist in Forms or Core business logic.
 2. **HWND-Bound Client Coordinates**: Client coordinates `(x, y)` have no meaning without an associated HWND. The `TargetPoint` model strictly pairs `IntPtr Hwnd`, `int ClientX`, and `int ClientY`.
 3. **Deepest Useful Child Target**: Clicking a button inside a panel inside a form targets the button's HWND with coordinates relative to that button, preserving the root window for process-level identification.
 4. **x64 Handle Integrity**: HWND values are treated as native integer pointers (`IntPtr` / `nint`) and formatted as 16-character hexadecimal strings (`0x00000000001203AA`) without 32-bit truncation.
@@ -82,10 +82,10 @@ BackgroundClicker/
 
 ## How to Build
 
-From the root `BackgroundClicker` directory, run:
+From the root `BackgroundAutomator` directory, run:
 
 ```powershell
-dotnet build BackgroundClicker.sln
+dotnet build BackgroundAutomator.sln
 ```
 
 ---
@@ -95,7 +95,7 @@ dotnet build BackgroundClicker.sln
 Run all unit and integration tests:
 
 ```powershell
-dotnet test BackgroundClicker.sln
+dotnet test BackgroundAutomator.sln
 ```
 
 The test suite covers:
@@ -105,16 +105,16 @@ The test suite covers:
 * Window target metadata and friendly string formatting.
 * Coordinate round-trip invariance (`screen -> client -> screen`) and window movement simulations.
 * Hierarchical child control resolution across multi-level containers (`Form -> Panel -> Button`).
-* Real-process end-to-end integration tests using `BackgroundClicker.TestTarget.exe`.
+* Real-process end-to-end integration tests using `BackgroundAutomator.TestTarget.exe`.
 
 ---
 
-## How to Run BackgroundClicker.App
+## How to Run BackgroundAutomator.App
 
 To launch the Target Window Inspector:
 
 ```powershell
-dotnet run --project src/BackgroundClicker.App/BackgroundClicker.App.csproj
+dotnet run --project src/BackgroundAutomator.App/BackgroundAutomator.App.csproj
 ```
 
 ### Using the Inspector:
@@ -125,12 +125,12 @@ dotnet run --project src/BackgroundClicker.App/BackgroundClicker.App.csproj
 
 ---
 
-## How to Run BackgroundClicker.TestTarget
+## How to Run BackgroundAutomator.TestTarget
 
 To launch the deterministic test bench:
 
 ```powershell
-dotnet run --project tests/BackgroundClicker.TestTarget/BackgroundClicker.TestTarget.csproj
+dotnet run --project tests/BackgroundAutomator.TestTarget/BackgroundAutomator.TestTarget.csproj
 ```
 
 Features of `TestTarget`:
@@ -149,8 +149,8 @@ Targeting and background window interaction depend fundamentally on the input ar
 1. **Standard Win32 & WinForms Controls**: Full support. Win32 buttons, edit controls, combo boxes, and nested panels expose distinct HWNDs and process standard Windows messages (`WM_LBUTTONDOWN`, `WM_LBUTTONUP`).
 2. **WPF & Modern UI Frameworks (WinUI, Electron, Chromium)**: Applications such as Chrome, Edge, VS Code, Discord, or modern WPF apps often host their entire UI surface inside a single root HWND (`Chrome_RenderWidgetHostHWND`, `HwndHost`, etc.). In these applications, internal buttons do not have individual HWNDs; the entire client area shares the parent HWND, and coordinates are relative to that surface.
 3. **DirectInput, Raw Input, and Hardware-Polled Games**: Games and applications that bypass the Windows message queue to read directly from hardware devices (DirectInput, Raw Input API, or exclusive-mode DirectX/Vulkan surfaces) may not respond to window-level message posting.
-4. **Security Boundaries (UAC / UIPI)**: BackgroundClicker cannot inspect or interact with windows belonging to processes running at a higher integrity level (e.g. standard user targeting an Administrator window). Running BackgroundClicker as Administrator is required if targeting elevated processes.
-5. **Native Win32 PrintWindow Non-Cancellability**: Win32 `PrintWindow` calls execute in unmanaged kernel/GDI code and cannot be forcefully aborted by a managed `CancellationToken`. BackgroundClicker guards against hangs via `User32.IsHungAppWindow` pre-checks, worker thread dispatch (`CaptureClientAreaAsync`), and a single-flight gate (`SemaphoreSlim(1, 1)`) preventing thread buildup.
+4. **Security Boundaries (UAC / UIPI)**: BackgroundAutomator cannot inspect or interact with windows belonging to processes running at a higher integrity level (e.g. standard user targeting an Administrator window). Running BackgroundAutomator as Administrator is required if targeting elevated processes.
+5. **Native Win32 PrintWindow Non-Cancellability**: Win32 `PrintWindow` calls execute in unmanaged kernel/GDI code and cannot be forcefully aborted by a managed `CancellationToken`. BackgroundAutomator guards against hangs via `User32.IsHungAppWindow` pre-checks, worker thread dispatch (`CaptureClientAreaAsync`), and a single-flight gate (`SemaphoreSlim(1, 1)`) preventing thread buildup.
 6. **Desktop Session Requirements**: Global hotkeys (F6/F7) and interactive mouse immobility verification require an active Windows interactive desktop session. Virtual CI environments running without a desktop session cannot execute interactive user-input acceptance tests.
 
 ---
@@ -160,15 +160,15 @@ Targeting and background window interaction depend fundamentally on the input ar
 To build the self-contained single-file portable release for Windows x64:
 
 ```powershell
-dotnet publish src/BackgroundClicker.App/BackgroundClicker.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
+dotnet publish src/BackgroundAutomator.App/BackgroundAutomator.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o ./publish
 ```
 
-This generates `BackgroundClicker.App.exe` in `./publish/`, which can be run on any 64-bit Windows 10/11 machine without requiring the .NET runtime to be installed.
+This generates `BackgroundAutomator.App.exe` in `./publish/`, which can be run on any 64-bit Windows 10/11 machine without requiring the .NET runtime to be installed.
 
 ### Profile Storage Location
 
 Saved profiles are stored as human-readable, schema-versioned JSON files at:
 ```text
-%LOCALAPPDATA%\BackgroundClicker\profiles\*.json
+%LOCALAPPDATA%\BackgroundAutomator\profiles\*.json
 ```
 Profiles can also be backed up, restored, or transferred across machines. Target windows will automatically re-resolve when loaded on another system based on the profile's durable `TargetDescriptor`.
