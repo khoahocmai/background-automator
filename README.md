@@ -4,6 +4,7 @@ BackgroundClicker is a Windows desktop utility designed for targeting, inspectin
 
 ## Documentation
 
+* **System Architecture & Logic (Agent Guide)**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 * **User Guide (Hướng dẫn sử dụng tiếng Việt)**: [docs/USER_GUIDE.md](docs/USER_GUIDE.md)
 * **Development Roadmap & Phases**: [docs/PHASES.md](docs/PHASES.md)
 
