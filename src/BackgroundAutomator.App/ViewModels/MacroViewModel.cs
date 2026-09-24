@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Drawing;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using BackgroundAutomator.App.Models;
 using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
+using BackgroundAutomator.Core.Keyboard;
 using BackgroundAutomator.Core.Logging;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Targeting;
@@ -17,12 +18,18 @@ public sealed partial class MacroViewModel : ObservableObject
     private readonly MacroRunner _macroRunner;
     private readonly BackgroundClickerEngine _clicker;
     private readonly GdiWindowCaptureService _captureService;
+    private readonly IBackgroundKeyboard _keyboard;
     private readonly IAppLogger _logger;
     private readonly Action<MacroRunnerState, string> _onMacroStateChanged;
 
     private WindowTarget? _currentTarget;
 
     public ObservableCollection<MacroActionItem> Actions { get; } = new();
+
+    public IReadOnlyList<BackgroundKey> AvailableKeys { get; } = Enum.GetValues<BackgroundKey>();
+
+    [ObservableProperty]
+    private BackgroundKey _selectedKey = BackgroundKey.Enter;
 
     [ObservableProperty]
     private MacroActionItem? _selectedAction;
@@ -44,7 +51,7 @@ public sealed partial class MacroViewModel : ObservableObject
 
     // Action builder configuration fields
     [ObservableProperty]
-    private int _selectedActionCategoryIndex = 0; // 0: Mouse, 1: Timing, 2: Condition
+    private int _selectedActionCategoryIndex = 0; // 0: Mouse, 1: Keyboard, 2: Timing, 3: Condition
 
     [ObservableProperty]
     private int _actionX = 50;
@@ -68,16 +75,28 @@ public sealed partial class MacroViewModel : ObservableObject
         MacroRunner macroRunner,
         BackgroundClickerEngine clicker,
         GdiWindowCaptureService captureService,
+        IBackgroundKeyboard keyboard,
         IAppLogger logger,
         Action<MacroRunnerState, string> onMacroStateChanged)
     {
         _macroRunner = macroRunner;
         _clicker = clicker;
         _captureService = captureService;
+        _keyboard = keyboard ?? new BackgroundKeyboardEngine(logger);
         _logger = logger;
         _onMacroStateChanged = onMacroStateChanged;
 
         WireEvents();
+    }
+
+    public MacroViewModel(
+        MacroRunner macroRunner,
+        BackgroundClickerEngine clicker,
+        GdiWindowCaptureService captureService,
+        IAppLogger logger,
+        Action<MacroRunnerState, string> onMacroStateChanged)
+        : this(macroRunner, clicker, captureService, new BackgroundKeyboardEngine(logger), logger, onMacroStateChanged)
+    {
     }
 
     public void SetCurrentTarget(WindowTarget? target)
@@ -188,6 +207,15 @@ public sealed partial class MacroViewModel : ObservableObject
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro DoubleClick at ({ActionX}, {ActionY})");
+    }
+
+    [RelayCommand]
+    public void AddPressKeyAction()
+    {
+        var action = new PressKeyAction(SelectedKey);
+        Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        StatusText = $"State: IDLE | Actions: {Actions.Count}";
+        _logger.Info($"Added Macro PressKey {SelectedKey}");
     }
 
     [RelayCommand]
@@ -317,7 +345,7 @@ public sealed partial class MacroViewModel : ObservableObject
             act.SetStatus("Ready", "#888888");
         }
 
-        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget.TargetHwnd);
+        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget.TargetHwnd, _keyboard);
         var actionList = Actions.Select(a => a.Action).ToList();
         _ = _macroRunner.RunAsync(actionList, context);
     }

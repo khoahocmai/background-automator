@@ -1,4 +1,4 @@
-﻿namespace BackgroundAutomator.Win32;
+namespace BackgroundAutomator.Win32;
 
 /// <summary>
 /// Centralized Win32 native constants.
@@ -56,9 +56,29 @@ public static class NativeConstants
     public const uint MOD_WIN = 0x0008;
     public const uint MOD_NOREPEAT = 0x4000;
 
-    // Virtual Key Codes for Hotkeys
+    // Virtual Key Codes
+    public const uint VK_BACK = 0x08;
+    public const uint VK_TAB = 0x09;
+    public const uint VK_RETURN = 0x0D;
+    public const uint VK_ESCAPE = 0x1B;
+    public const uint VK_SPACE = 0x20;
+    public const uint VK_PRIOR = 0x21; // PageUp
+    public const uint VK_NEXT = 0x22;  // PageDown
+    public const uint VK_END = 0x23;
+    public const uint VK_HOME = 0x24;
+    public const uint VK_LEFT = 0x25;
+    public const uint VK_UP = 0x26;
+    public const uint VK_RIGHT = 0x27;
+    public const uint VK_DOWN = 0x28;
+    public const uint VK_DELETE = 0x2E;
     public const uint VK_F6 = 0x75;
     public const uint VK_F7 = 0x76;
+
+    // MapVirtualKey translation types
+    public const uint MAPVK_VK_TO_VSC = 0;
+    public const uint MAPVK_VSC_TO_VK = 1;
+    public const uint MAPVK_VK_TO_CHAR = 2;
+    public const uint MAPVK_VK_TO_VSC_EX = 4;
 
     // Command Messages
     public const uint WM_COMMAND = 0x0111;

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using BackgroundAutomator.Core.Targeting;
 using BackgroundAutomator.Win32;
 
@@ -13,6 +13,7 @@ public sealed class TestTargetFixture : IDisposable
     public IntPtr DelayGreenButtonHwnd { get; private set; }
     public IntPtr SetRedButtonHwnd { get; private set; }
     public IntPtr SetGreenButtonHwnd { get; private set; }
+    public IntPtr KeyLoggerHwnd { get; private set; }
     public string LogFilePath { get; }
 
     public TestTargetFixture(string? additionalArgs = null)
@@ -102,11 +103,23 @@ public sealed class TestTargetFixture : IDisposable
                             ColorPanelHwnd = colHwnd;
                         }
                     }
+
+                    int idxKey = text.IndexOf("KeyLogger HWND: ", StringComparison.OrdinalIgnoreCase);
+                    if (idxKey >= 0)
+                    {
+                        string hex = text.Substring(idxKey + 16).Trim();
+                        int end = hex.IndexOf(' ');
+                        if (end > 0) hex = hex.Substring(0, end);
+                        if (HwndFormatter.TryParse(hex, out IntPtr keyHwnd))
+                        {
+                            KeyLoggerHwnd = keyHwnd;
+                        }
+                    }
                 }
                 return true;
             }, IntPtr.Zero);
 
-            if (ButtonHwnd != IntPtr.Zero && ColorPanelHwnd != IntPtr.Zero)
+            if (ButtonHwnd != IntPtr.Zero && ColorPanelHwnd != IntPtr.Zero && KeyLoggerHwnd != IntPtr.Zero)
             {
                 break;
             }

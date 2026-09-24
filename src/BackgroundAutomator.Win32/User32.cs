@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace BackgroundAutomator.Win32;
@@ -10,6 +10,23 @@ public static class User32
 {
     private const string User32Dll = "user32.dll";
     private const string DwmapiDll = "dwmapi.dll";
+
+    [DllImport(User32Dll)]
+    public static extern IntPtr GetDesktopWindow();
+
+    [DllImport(User32Dll)]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport(User32Dll, SetLastError = true)]
+    public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+    [DllImport(User32Dll, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseDesktop(IntPtr hDesktop);
+
+    [DllImport(User32Dll, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetThreadDesktop(IntPtr hDesktop);
 
     [DllImport(User32Dll, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -152,6 +169,9 @@ public static class User32
 
     [DllImport(DwmapiDll, PreserveSig = true)]
     public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport(User32Dll, SetLastError = true)]
+    public static extern uint MapVirtualKey(uint uCode, uint uMapType);
 
     /// <summary>
     /// Safely gets the window text/title for a given HWND. Returns empty string if failed or empty.

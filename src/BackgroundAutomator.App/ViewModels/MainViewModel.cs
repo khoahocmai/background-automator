@@ -1,7 +1,8 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
 using BackgroundAutomator.Core.Coordinates;
+using BackgroundAutomator.Core.Keyboard;
 using BackgroundAutomator.Core.Logging;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Profiles;
@@ -17,6 +18,7 @@ public sealed partial class MainViewModel : ObservableObject
     private readonly CoordinateService _coordinateService;
     private readonly WindowTargetService _targetService;
     private readonly BackgroundClickerEngine _clicker;
+    private readonly BackgroundKeyboardEngine _keyboard;
     private readonly ClickRunner _runner;
     private readonly GdiWindowCaptureService _captureService;
     private readonly MacroRunner _macroRunner;
@@ -53,6 +55,7 @@ public sealed partial class MainViewModel : ObservableObject
         _coordinateService = new CoordinateService(_logger);
         _targetService = new WindowTargetService(_coordinateService, _logger);
         _clicker = new BackgroundClickerEngine(_logger);
+        _keyboard = new BackgroundKeyboardEngine(_logger);
         _runner = new ClickRunner(_clicker, _logger);
         _captureService = new GdiWindowCaptureService(_logger);
         _macroRunner = new MacroRunner(_logger);
@@ -75,6 +78,7 @@ public sealed partial class MainViewModel : ObservableObject
             _macroRunner,
             _clicker,
             _captureService,
+            _keyboard,
             _logger,
             OnMacroRunnerStateChanged);
 

@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using BackgroundAutomator.Core.Macro;
 
 namespace BackgroundAutomator.Core.Profiles;
@@ -16,6 +16,7 @@ public sealed class MacroActionConfig
     public int? Tolerance { get; set; }
     public int? TimeoutMs { get; set; }
     public int? PollIntervalMs { get; set; }
+    public string? Key { get; set; }
 
     public static MacroActionConfig FromMacroAction(IMacroAction action)
     {
@@ -48,6 +49,11 @@ public sealed class MacroActionConfig
                 TimeoutMs = (int)wca.Timeout.TotalMilliseconds,
                 PollIntervalMs = (int)wca.PollInterval.TotalMilliseconds
             },
+            PressKeyAction pka => new MacroActionConfig
+            {
+                ActionType = "PressKey",
+                Key = pka.Key.ToString()
+            },
             _ => throw new NotSupportedException($"Macro action type '{action.GetType().Name}' is not supported for serialization.")
         };
     }
@@ -66,8 +72,18 @@ public sealed class MacroActionConfig
                 tolerance: Tolerance ?? 0,
                 timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
                 pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null),
+            "presskey" => new PressKeyAction(ParseKey(Key)),
             _ => throw new InvalidOperationException($"Unknown or unsupported macro action type '{ActionType}'.")
         };
+    }
+
+    private static BackgroundAutomator.Core.Keyboard.BackgroundKey ParseKey(string? key)
+    {
+        if (Enum.TryParse<BackgroundAutomator.Core.Keyboard.BackgroundKey>(key, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return BackgroundAutomator.Core.Keyboard.BackgroundKey.Enter;
     }
 
     private static Color ParseColor(string? hex)

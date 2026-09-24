@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Text.Json;
 using BackgroundAutomator.Core.Clicking;
 using BackgroundAutomator.Core.Macro;
@@ -267,5 +267,46 @@ public class ProfileStorageTests : IDisposable
 
         var ex = Assert.Throws<InvalidOperationException>(() => config.ToMacroAction());
         Assert.Contains("UnknownFutureAction", ex.Message);
+    }
+
+    [Fact]
+    public void SaveAndLoad_MacroModeProfile_WithPressKey_Preserved()
+    {
+        var actions = new List<IMacroAction>
+        {
+            new ClickAction(10, 20),
+            new PressKeyAction(BackgroundAutomator.Core.Keyboard.BackgroundKey.Enter),
+            new PressKeyAction(BackgroundAutomator.Core.Keyboard.BackgroundKey.ArrowDown)
+        };
+
+        var macroConfigs = actions.Select(MacroActionConfig.FromMacroAction).ToList();
+
+        var profile = new ProfileModel
+        {
+            Name = "KeyboardProfileTest",
+            Mode = ProfileMode.Macro,
+            MacroActions = macroConfigs
+        };
+
+        _storage.SaveProfile(profile);
+
+        // Verify JSON contents have semantic structure: "actionType": "PressKey", "key": "Enter"
+        string filePath = _storage.GetProfileFilePath("KeyboardProfileTest");
+        string json = File.ReadAllText(filePath);
+        Assert.Contains("\"actionType\": \"PressKey\"", json);
+        Assert.Contains("\"key\": \"Enter\"", json);
+        Assert.Contains("\"key\": \"ArrowDown\"", json);
+
+        var loaded = _storage.LoadProfileByName("KeyboardProfileTest");
+        Assert.Equal(ProfileMode.Macro, loaded.Mode);
+        Assert.Equal(3, loaded.MacroActions.Count);
+
+        var loadedActions = loaded.MacroActions.Select(c => c.ToMacroAction()).ToList();
+
+        var keyAction1 = Assert.IsType<PressKeyAction>(loadedActions[1]);
+        Assert.Equal(BackgroundAutomator.Core.Keyboard.BackgroundKey.Enter, keyAction1.Key);
+
+        var keyAction2 = Assert.IsType<PressKeyAction>(loadedActions[2]);
+        Assert.Equal(BackgroundAutomator.Core.Keyboard.BackgroundKey.ArrowDown, keyAction2.Key);
     }
 }

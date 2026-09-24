@@ -42,6 +42,21 @@
                     </StackPanel>
                 </TabItem>
 
+                <!-- Keyboard Tab -->
+                <TabItem Header="Keyboard">
+                    <StackPanel Orientation="Horizontal" Margin="8,12,8,8" VerticalAlignment="Center">
+                        <TextBlock Text="Key:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                        <ComboBox ItemsSource="{Binding AvailableKeys}"
+                                  SelectedItem="{Binding SelectedKey, Mode=TwoWay}"
+                                  Width="140"
+                                  Margin="0,0,16,0" />
+
+                        <ui:Button Content="+ Press Key"
+                                   Appearance="Primary"
+                                   Command="{Binding AddPressKeyActionCommand}" />
+                    </StackPanel>
+                </TabItem>
+
                 <!-- Timing Tab -->
                 <TabItem Header="Timing">
                     <StackPanel Orientation="Horizontal" Margin="8,12,8,8" VerticalAlignment="Center">

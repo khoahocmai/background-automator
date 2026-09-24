@@ -1,4 +1,4 @@
-﻿namespace BackgroundAutomator.Core.Macro;
+namespace BackgroundAutomator.Core.Macro;
 
 /// <summary>
 /// Detailed result returned from the execution of an <see cref="IMacroAction"/>.
@@ -24,6 +24,9 @@ public sealed record MacroActionResult(MacroActionStatus Status, string? Message
 
     public static MacroActionResult ClickFailed(string message = "Failed to dispatch background click.") =>
         new(MacroActionStatus.ClickFailed, message);
+
+    public static MacroActionResult KeyPressFailed(string message = "Failed to dispatch background key press.") =>
+        new(MacroActionStatus.KeyPressFailed, message);
 
     public static MacroActionResult InvalidConfiguration(string message = "Invalid action configuration parameters.") =>
         new(MacroActionStatus.InvalidConfiguration, message);

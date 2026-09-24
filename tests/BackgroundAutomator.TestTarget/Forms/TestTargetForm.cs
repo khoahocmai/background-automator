@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Windows.Forms;
@@ -428,7 +428,7 @@ public sealed class TestTargetForm : Form, IMessageFilter
     {
         uint pid = Kernel32.GetCurrentProcessId();
         uint tid = Kernel32.GetCurrentThreadId();
-        _lblProcessInfo.Text = $"Process: BackgroundAutomator.TestTarget.exe | PID: {pid} | Thread: {tid} | Form HWND: {HwndFormatter.Format(Handle)} | Button HWND: {HwndFormatter.Format(_testButton.Handle)} | Panel HWND: {HwndFormatter.Format(_testPanel.Handle)} | Color HWND: {HwndFormatter.Format(_colorPanel.Handle)}";
+        _lblProcessInfo.Text = $"Process: BackgroundAutomator.TestTarget.exe | PID: {pid} | Thread: {tid} | Form HWND: {HwndFormatter.Format(Handle)} | Button HWND: {HwndFormatter.Format(_testButton.Handle)} | Panel HWND: {HwndFormatter.Format(_testPanel.Handle)} | Color HWND: {HwndFormatter.Format(_colorPanel.Handle)} | KeyLogger HWND: {HwndFormatter.Format(_txtKeyLogger.Handle)}";
     }
 
     private void OnTargetButtonClick(object? sender, EventArgs e)
