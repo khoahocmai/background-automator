@@ -68,6 +68,15 @@ public sealed class Win32WindowForegroundService : IWindowForegroundService
         return string.Empty;
     }
 
+    public int GetProcessId(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero || !User32.IsWindow(hWnd))
+            return 0;
+
+        User32.GetWindowThreadProcessId(hWnd, out uint pid);
+        return (int)pid;
+    }
+
     public string GetWindowClass(IntPtr hWnd) => User32.GetClassNameSafe(hWnd);
 
     public IntPtr GetRootWindow(IntPtr hWnd)

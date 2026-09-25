@@ -207,63 +207,68 @@ public class KeyboardIntegrationTests
         var thread = new Thread(() =>
         {
             IntPtr hDesk = User32.OpenDesktop("default", 0, false, 0x01FF);
-            if (hDesk != IntPtr.Zero)
+            try
             {
-                User32.SetThreadDesktop(hDesk);
-            }
-
-            IAppLogger logger = new InMemoryLogger();
-            logger.MessageLogged += entry => _output.WriteLine(entry.ToString());
-            var engine = new BackgroundKeyboardEngine(logger);
-
-            IntPtr fg = User32.GetForegroundWindow();
-            logger.Info($"Current Foreground HWND: 0x{fg.ToInt64():X8}");
-
-            var terminalProcs = System.Diagnostics.Process.GetProcesses()
-                .Where(p => p.ProcessName.Contains("Terminal", StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            foreach (var proc in terminalProcs)
-            {
-                logger.Info($"Terminal Process: {proc.ProcessName} (PID {proc.Id})");
-            }
-
-            // Enumerate windows looking for CASCADIA or terminal windows
-            User32.EnumWindows((hWnd, lParam) =>
-            {
-                string cls = User32.GetClassNameSafe(hWnd);
-                string title = User32.GetWindowTextSafe(hWnd);
-
-                if (cls.Contains("CASCADIA", StringComparison.OrdinalIgnoreCase) ||
-                    title.Contains("PowerShell", StringComparison.OrdinalIgnoreCase) ||
-                    cls.Contains("Console", StringComparison.OrdinalIgnoreCase))
+                if (hDesk != IntPtr.Zero)
                 {
-                    User32.GetWindowThreadProcessId(hWnd, out uint pid);
-                    bool isForeground = (User32.GetForegroundWindow() == hWnd);
-                    logger.Info($"Found Terminal Window: HWND=0x{hWnd.ToInt64():X8}, PID={pid}, Class='{cls}', Title='{title}', Foreground={isForeground}");
-
-                    // Test PressKey on this window
-                    var res = engine.PressKey(hWnd, BackgroundKey.Enter);
-                    logger.Info($"  PressKey(Enter) on Top HWND 0x{hWnd.ToInt64():X8}: Result={res}");
-
-                    // Also enumerate and test child windows
-                    User32.EnumChildWindows(hWnd, (hChild, lChild) =>
-                    {
-                        string childCls = User32.GetClassNameSafe(hChild);
-                        string childTitle = User32.GetWindowTextSafe(hChild);
-                        logger.Info($"    Child HWND=0x{hChild.ToInt64():X8}, Class='{childCls}', Title='{childTitle}'");
-
-                        var childRes = engine.PressKey(hChild, BackgroundKey.Enter);
-                        logger.Info($"    PressKey(Enter) on Child HWND 0x{hChild.ToInt64():X8}: Result={childRes}");
-                        return true;
-                    }, IntPtr.Zero);
+                    User32.SetThreadDesktop(hDesk);
                 }
-                return true;
-            }, IntPtr.Zero);
 
-            if (hDesk != IntPtr.Zero)
+                IAppLogger logger = new InMemoryLogger();
+                logger.MessageLogged += entry => _output.WriteLine(entry.ToString());
+                var engine = new BackgroundKeyboardEngine(logger);
+
+                IntPtr fg = User32.GetForegroundWindow();
+                logger.Info($"Current Foreground HWND: 0x{fg.ToInt64():X8}");
+
+                var terminalProcs = System.Diagnostics.Process.GetProcesses()
+                    .Where(p => p.ProcessName.Contains("Terminal", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var proc in terminalProcs)
+                {
+                    logger.Info($"Terminal Process: {proc.ProcessName} (PID {proc.Id})");
+                }
+
+                // Enumerate windows looking for CASCADIA or terminal windows
+                User32.EnumWindows((hWnd, lParam) =>
+                {
+                    string cls = User32.GetClassNameSafe(hWnd);
+                    string title = User32.GetWindowTextSafe(hWnd);
+
+                    if (cls.Contains("CASCADIA", StringComparison.OrdinalIgnoreCase) ||
+                        title.Contains("PowerShell", StringComparison.OrdinalIgnoreCase) ||
+                        cls.Contains("Console", StringComparison.OrdinalIgnoreCase))
+                    {
+                        User32.GetWindowThreadProcessId(hWnd, out uint pid);
+                        bool isForeground = (User32.GetForegroundWindow() == hWnd);
+                        logger.Info($"Found Terminal Window: HWND=0x{hWnd.ToInt64():X8}, PID={pid}, Class='{cls}', Title='{title}', Foreground={isForeground}");
+
+                        // Test PressKey on this window
+                        var res = engine.PressKey(hWnd, BackgroundKey.Enter);
+                        logger.Info($"  PressKey(Enter) on Top HWND 0x{hWnd.ToInt64():X8}: Result={res}");
+
+                        // Also enumerate and test child windows
+                        User32.EnumChildWindows(hWnd, (hChild, lChild) =>
+                        {
+                            string childCls = User32.GetClassNameSafe(hChild);
+                            string childTitle = User32.GetWindowTextSafe(hChild);
+                            logger.Info($"    Child HWND=0x{hChild.ToInt64():X8}, Class='{childCls}', Title='{childTitle}'");
+
+                            var childRes = engine.PressKey(hChild, BackgroundKey.Enter);
+                            logger.Info($"    PressKey(Enter) on Child HWND 0x{hChild.ToInt64():X8}: Result={childRes}");
+                            return true;
+                        }, IntPtr.Zero);
+                    }
+                    return true;
+                }, IntPtr.Zero);
+            }
+            finally
             {
-                User32.CloseDesktop(hDesk);
+                if (hDesk != IntPtr.Zero)
+                {
+                    User32.CloseDesktop(hDesk);
+                }
             }
         });
 

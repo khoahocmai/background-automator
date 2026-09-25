@@ -88,6 +88,15 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return MacroActionResult.ApprovalBlocked("Target window is minimized. TargetNotInteractable.");
         }
 
+        // Section 3: Check UIPI elevation compatibility before any foreground or input attempt
+        int initialPid = context.ForegroundService.GetProcessId(targetHwnd);
+        var initialUipi = context.ElevationService.CheckCompatibility(initialPid);
+        if (initialUipi.Compatibility == Security.ElevationCompatibility.UipiMismatch)
+        {
+            context.Logger?.Warning($"[AutoConfirm] UIPI mismatch: Target PID {initialPid} is elevated while BackgroundAutomator is not. Auto-confirm blocked.");
+            return MacroActionResult.ApprovalBlocked("UIPI mismatch: Target is running as Administrator while BackgroundAutomator is not. Auto-confirm blocked.");
+        }
+
         context.Logger?.Info($"[AutoConfirm] Started. Rule: \"{Rule.Name}\", Mode: {ExecutionMode}, Delivery: {DeliveryMode}, Allowed: \"{Rule.AllowedCommand}\"");
 
         // Section 1.1: Always inspect visible viewport only for approval automation
@@ -149,7 +158,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                     context.Logger?.Info($"[AutoConfirm] command extracted: \"{snapshot.CommandText}\"");
                     context.Logger?.Info($"[AutoConfirm] rule \"{Rule.Name}\" matched");
 
-                    // 1. Observe-only mode
+                    // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
                     if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
                     {
                         context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"");
@@ -163,8 +172,6 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                         targetRootHwnd,
                         request,
                         snapshot,
-                        actualProc,
-                        actualClass,
                         ct).ConfigureAwait(false);
                 }
                 else
@@ -211,11 +218,27 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         IntPtr targetRootHwnd,
         TextDetectionRequest request,
         CommandPromptSnapshot initialSnapshot,
-        string actualProc,
-        string actualClass,
         CancellationToken ct)
     {
         IntPtr effectiveRoot = targetRootHwnd != IntPtr.Zero ? targetRootHwnd : targetHwnd;
+
+        // Re-check minimized state before foreground pulse
+        if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+            (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+        {
+            context.Logger?.Warning("[AutoConfirm] Target window is minimized prior to foreground pulse. TargetNotInteractable.");
+            return MacroActionResult.ApprovalBlocked("Target window is minimized. TargetNotInteractable.");
+        }
+
+        // Re-check UIPI compatibility before requesting foreground activation
+        int pulsePid = context.ForegroundService.GetProcessId(targetHwnd);
+        var pulseUipi = context.ElevationService.CheckCompatibility(pulsePid);
+        if (pulseUipi.Compatibility == Security.ElevationCompatibility.UipiMismatch)
+        {
+            context.Logger?.Warning($"[AutoConfirm] UIPI mismatch detected prior to foreground activation for PID {pulsePid}.");
+            return MacroActionResult.ApprovalBlocked("UIPI mismatch: Target is running as Administrator while BackgroundAutomator is not. Foreground activation blocked.");
+        }
+
         IntPtr previousForeground = context.ForegroundService.GetForegroundWindow();
         context.Logger?.Info($"[AutoConfirm] previous foreground = 0x{previousForeground.ToInt64():X8}");
 
@@ -251,7 +274,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             context.Logger?.Info("[AutoConfirm] terminal foreground confirmed");
 
-            // Step 3: CRITICAL REVALIDATION (Requirement 13)
+            // Step 3: CRITICAL REVALIDATION
             // Re-read visible viewport
             var revalDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
             if (!revalDetect.Matched)
@@ -260,13 +283,44 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Approval prompt disappeared after foreground activation. RevalidationFailed.");
             }
 
+            // Verify target window identity has not changed or closed
+            if (!context.ForegroundService.IsWindow(targetHwnd))
+            {
+                context.Logger?.Warning("[AutoConfirm] Target window closed after foreground activation.");
+                return MacroActionResult.TargetUnavailable("Target window closed after foreground activation.");
+            }
+
+            IntPtr revalRoot = context.ForegroundService.GetRootWindow(targetHwnd);
+            if (revalRoot != effectiveRoot)
+            {
+                context.Logger?.Warning("[AutoConfirm] Target root window changed after foreground activation. TargetMismatch.");
+                return MacroActionResult.ApprovalBlocked("Target root window changed after foreground activation. TargetMismatch.");
+            }
+
+            string freshProc = context.ForegroundService.GetProcessName(targetHwnd);
+            string freshClass = context.ForegroundService.GetWindowClass(targetHwnd);
+            if (string.IsNullOrEmpty(freshProc))
+            {
+                context.Logger?.Warning("[AutoConfirm] Target process unavailable after foreground activation.");
+                return MacroActionResult.TargetUnavailable("Target process unavailable after foreground activation.");
+            }
+
+            // Re-check UIPI compatibility after activation
+            int revalPid = context.ForegroundService.GetProcessId(targetHwnd);
+            var revalUipi = context.ElevationService.CheckCompatibility(revalPid);
+            if (revalUipi.Compatibility == Security.ElevationCompatibility.UipiMismatch)
+            {
+                context.Logger?.Warning($"[AutoConfirm] UIPI mismatch detected during revalidation for PID {revalPid}.");
+                return MacroActionResult.ApprovalBlocked("UIPI mismatch detected during revalidation. Foreground input blocked.");
+            }
+
             // Re-parse command
             string revalRaw = revalDetect.RawText ?? revalDetect.ObservedText ?? string.Empty;
             var revalExtraction = context.CommandPromptParser.Parse(revalRaw, Rule.ExpectedPrompt, Rule.ExpectedSelectedOption);
             var revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
 
-            // Re-evaluate complete rule
-            var revalDecision = CommandApprovalEvaluator.Evaluate(Rule, revalSnapshot, actualProc, actualClass);
+            // Re-evaluate complete rule with fresh process identity and fresh snapshot
+            var revalDecision = CommandApprovalEvaluator.Evaluate(Rule, revalSnapshot, freshProc, freshClass);
             if (!revalDecision.IsAllowed)
             {
                 context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
@@ -275,7 +329,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             context.Logger?.Info("[AutoConfirm] rule revalidated");
 
-            // Step 4: Verify foreground ownership IMMEDIATELY before SendInput (Requirement 15)
+            // Step 4: Verify foreground ownership IMMEDIATELY before SendInput (no intervening async delay)
             IntPtr immediateFg = context.ForegroundService.GetForegroundWindow();
             if (immediateFg != effectiveRoot && immediateFg != targetHwnd)
             {
@@ -283,7 +337,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Foreground changed unexpectedly before input injection. ForegroundChanged.");
             }
 
-            // Step 5: Dispatch Enter
+            // Step 5: Dispatch Enter (maximum 1 dispatch per action execution)
             if (DeliveryMode == KeyDeliveryMode.ForegroundPulse)
             {
                 bool sent = context.ForegroundKeyboard.SendEnter();
@@ -300,51 +354,74 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             context.Logger?.Info("[AutoConfirm] Enter sent");
 
-            // Step 6: Wait for prompt acknowledgement / disappearance (Requirement 21)
+            // Step 6: Wait for prompt acknowledgement based on prompt fingerprint
             var ackSw = Stopwatch.StartNew();
-            bool promptDisappeared = false;
+            bool promptAcknowledged = false;
+            string initialCmd = revalSnapshot.CommandText ?? string.Empty;
+            string initialOpt = revalSnapshot.SelectedOptionText ?? string.Empty;
+
             while (ackSw.ElapsedMilliseconds < 2000)
             {
                 await Task.Delay(50, ct).ConfigureAwait(false);
                 var ackDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
                 if (!ackDetect.Matched)
                 {
-                    promptDisappeared = true;
+                    // Generic prompt text disappeared completely
+                    promptAcknowledged = true;
+                    break;
+                }
+
+                // If prompt text matched, check if the specific command or selected option changed
+                string ackRaw = ackDetect.RawText ?? ackDetect.ObservedText ?? string.Empty;
+                var currentExtraction = context.CommandPromptParser.Parse(ackRaw, Rule.ExpectedPrompt, Rule.ExpectedSelectedOption);
+                if (!currentExtraction.Success ||
+                    !string.Equals(currentExtraction.CommandText, initialCmd, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(currentExtraction.SelectedOptionText, initialOpt, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Fingerprint changed! Command A was dismissed or replaced by subsequent prompt
+                    promptAcknowledged = true;
                     break;
                 }
             }
 
-            if (!promptDisappeared)
+            if (!promptAcknowledged)
             {
                 context.Logger?.Warning("[AutoConfirm] Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
                 return MacroActionResult.ApprovalBlocked("Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
             }
 
-            context.Logger?.Info($"[AutoConfirm] Prompt disappeared in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
+            context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
             return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\" via rule '{Rule.Name}'.");
         }
         finally
         {
-            // Step 7: Restore previous foreground window (Requirement 16)
+            // Step 7: Restore previous foreground window safely
             if (previousForeground != IntPtr.Zero &&
                 previousForeground != targetHwnd &&
                 previousForeground != effectiveRoot)
             {
-                try
+                if (context.ForegroundService.IsWindow(previousForeground))
                 {
-                    bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
-                    if (restored)
+                    try
                     {
-                        context.Logger?.Info("[AutoConfirm] previous foreground restored");
+                        bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
+                        if (restored)
+                        {
+                            context.Logger?.Info("[AutoConfirm] previous foreground restored");
+                        }
+                        else
+                        {
+                            context.Logger?.Warning("[AutoConfirm] Previous foreground window could not be restored by OS. (Command approval was already processed).");
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        context.Logger?.Warning("[AutoConfirm] Foreground restore failed");
+                        context.Logger?.Warning($"[AutoConfirm] Foreground restore exception: {ex.Message}");
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    context.Logger?.Warning($"[AutoConfirm] Foreground restore exception: {ex.Message}");
+                    context.Logger?.Info("[AutoConfirm] Previous foreground window was closed during execution; skipping restoration.");
                 }
             }
         }

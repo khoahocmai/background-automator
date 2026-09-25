@@ -173,6 +173,22 @@ To guarantee system stability and responsiveness, BackgroundAutomator implements
 
 ---
 
+## Chronology & Phase Numbering Clarification
+
+This project tracks two interconnected development streams in a single unified progression:
+1. **Core Roadmap Phases (Phases 1–4)**: Established the core foundation:
+   - Phase 1: Foundation + Target Window Inspector
+   - Phase 2: Background Click MVP
+   - Phase 3: Macro Engine + Window Capture
+   - Phase 4: Hardening + Persistence + Release
+2. **Terminal Prompt Automation Milestones (Phases 5–7 / Prompt Milestones 1–4)**: Extended the macro engine to support terminal command approval automation:
+   - **Phase 5** (Prompt Step 1, Commit `66605c2`): Background key press via Win32 `PostMessage`.
+   - *(Prompt Step 2)*: Real-world diagnostic finding that `PostMessage` does not produce ConPTY terminal input in Windows Terminal, establishing the requirement for a verified foreground pulse.
+   - **Phase 6** (Prompt Step 3, Commit `89b98e9`): Terminal text detection using Windows UI Automation (`TextPattern.GetVisibleRanges()`).
+   - **Phase 7** (Prompt Step 4, Commit `200c0f0` + Hardening Audit): Safe Auto-Confirm with strict allowlisting, foreground pulse, and multi-layered fail-closed runtime guards.
+
+---
+
 ## Phase 5 — Background Key Press Macro Action
 
 Status: COMPLETE (Commit `66605c2`)
@@ -201,30 +217,34 @@ Scope:
 
 ## Phase 7 (Prompt Phase 4) — Safe Auto-Confirm + Terminal Foreground Input
 
-Status: COMPLETE
+Status: COMPLETE (Initial commit `200c0f0`, Hardened in audit)
 
 Scope:
 - **Phase 3 Hardening & Safety Invariants**:
   - `TextDetectionScope.VisibleViewportOnly`: Enforced visible viewport authority via `TextPattern.GetVisibleRanges()`. Never silently falls back to document history for approval automation.
   - Raw visible text preservation (`RawText` alongside normalized `ObservedText`).
   - Gated all real-world desktop/terminal tests behind `BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=1`. Default `dotnet test` suite runs 100% headless with zero live desktop dependencies.
-- **Command Prompt Parsing (`ICommandPromptParser`)**:
+- **Command Prompt Parsing (`ICommandPromptParser`) & Ambiguity Fail-Closed**:
   - Real-world Cascadia terminal buffer unwrapping for CLI/agent tools (`● Bash(...)`, `run_command(...)`, `Command: ...`, raw lines).
-  - Selected option detection (`> 1. Yes, run command`).
+  - Multiline continuation support (`|`, `` ` ``, `\`, and indented lines).
+  - Fail-closed ambiguity guard: If multiple candidate commands or ambiguous lines are detected, parser flags `IsAmbiguous = true` and `CommandApprovalEvaluator` blocks with `AmbiguousPrompt`.
+  - Selected option detection (`> 1. Yes, run command`, `❯`, `*`).
   - `CommandPromptSnapshot` runtime model.
 - **Strict Allowlist Rule Evaluator (`CommandApprovalEvaluator`)**:
   - Multi-condition verification: Process + WindowClass + Prompt + SelectedOption + Exact Allowlisted Command (`CommandMatchMode.Exact`).
-  - Fail-closed design: Returns explicit block reasons (`CommandNotAllowed`, `OptionNotSelected`, `TargetMismatch`, etc.).
-  - `AutoConfirmExecutionMode`: `ObserveOnly` (dry-run, logs `WOULD APPROVE`) and `Confirm` (live execution).
-- **Foreground Pulse Delivery (`IForegroundKeyboard`, `IWindowForegroundService`)**:
+  - Fail-closed design: Returns explicit block reasons (`CommandNotAllowed`, `OptionNotSelected`, `TargetMismatch`, `AmbiguousPrompt`, `UipiMismatch`, etc.).
+  - `AutoConfirmExecutionMode`: `ObserveOnly` (dry-run, logs `WOULD APPROVE`, zero input/activation) and `Confirm` (live execution).
+- **Foreground Pulse Delivery & Runtime Guards (`IForegroundKeyboard`, `IWindowForegroundService`)**:
+  - **UIPI Runtime Guard**: Pre-checks target elevation via `ProcessElevationService.CheckElevationCompatibility`. Fails closed (`UipiMismatch`) if BackgroundAutomator is standard user and target is elevated, preventing activation or injection attempts.
   - Encapsulated Win32 `SendInput` (`SendInputHelper`) and `SetForegroundWindow`/`GetForegroundWindow`/`IsIconic`.
-  - Target minimized check (`IsIconic`) failing closed.
-  - Double-validation loop: initial background evaluation -> activate target root window -> verify foreground -> re-read UIA visible viewport -> re-parse and re-evaluate -> verify foreground immediately before `SendInput` (focus race guard) -> dispatch Enter -> poll prompt disappearance (duplicate protection) -> restore previous foreground window in `finally` block.
+  - Target minimized check (`IsIconic`) failing closed with `TargetUnavailable`.
+  - Double-validation loop: initial background evaluation -> activate target root window -> verify foreground -> re-read UIA visible viewport -> re-verify root window, process identity, and window class -> re-check UIPI compatibility -> re-parse and re-evaluate -> verify foreground immediately before `SendInput` (synchronous, 0 async delays) -> dispatch single Enter key-down/up -> poll prompt disappearance using snapshot fingerprint (`expectedCmd`, `expectedOpt`) to prevent duplicate Enter dispatch -> restore previous foreground window in `finally` block (verifying `IsWindow` so closed previous windows do not fail approval).
 - **Presentation & Persistence**:
   - Macro page UI tab for Safe Auto-Confirm with rule editor and mode toggle (`ObserveOnly` vs `Confirm`).
   - Backward-compatible profile JSON persistence with atomic storage.
 - **Test Coverage**:
-  - 246 total automated tests (0 failures, 0 skipped). Includes 34 new unit and mock integration tests covering all parsing variants, rule evaluator block reasons, focus races, revalidation failures, timeouts, duplicate prevention, and profile serialization.
+  - Complete automated test suite passing with 0 failures, 0 skipped, 0 desktop dependencies on default test run. Includes comprehensive unit and mock integration tests covering parsing variants, continuation lines, ambiguous commands, rule evaluator block reasons, UIPI mismatch aborts, focus races, revalidation failures, timeouts, duplicate prevention, and profile serialization.
+
 
 ---
 

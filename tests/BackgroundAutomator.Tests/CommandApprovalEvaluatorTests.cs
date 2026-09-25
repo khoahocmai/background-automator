@@ -138,4 +138,21 @@ public class CommandApprovalEvaluatorTests
         Assert.False(decision.IsAllowed);
         Assert.Equal(ApprovalBlockReason.CommandNotFound, decision.BlockReason);
     }
+
+    [Fact]
+    public void Evaluator_Blocks_When_Snapshot_Is_Ambiguous()
+    {
+        var rule = CreateDefaultRule();
+        var snapshot = CreateValidSnapshot() with
+        {
+            IsAmbiguous = true,
+            AmbiguityReason = "Multiple candidate commands detected above prompt"
+        };
+
+        var decision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA");
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.AmbiguousPrompt, decision.BlockReason);
+        Assert.Contains("Multiple candidate commands", decision.Explanation);
+    }
 }

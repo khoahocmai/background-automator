@@ -11,7 +11,9 @@ public sealed record CommandPromptSnapshot(
     string? PromptText,
     string? SelectedOptionText,
     bool IsApprovalPromptVisible,
-    bool IsYesOptionSelected)
+    bool IsYesOptionSelected,
+    bool IsAmbiguous = false,
+    string? AmbiguityReason = null)
 {
     public static CommandPromptSnapshot FromExtraction(
         IntPtr targetHwnd,
@@ -25,6 +27,8 @@ public sealed record CommandPromptSnapshot(
             extraction.PromptText,
             extraction.SelectedOptionText,
             extraction.IsApprovalPromptVisible,
-            extraction.IsYesOptionSelected);
+            extraction.IsYesOptionSelected,
+            extraction.IsAmbiguous,
+            extraction.FailureReason);
     }
 }

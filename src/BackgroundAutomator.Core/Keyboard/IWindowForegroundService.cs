@@ -42,6 +42,11 @@ public interface IWindowForegroundService
     string GetProcessName(IntPtr hWnd);
 
     /// <summary>
+    /// Gets the process ID associated with the window.
+    /// </summary>
+    int GetProcessId(IntPtr hWnd);
+
+    /// <summary>
     /// Gets the window class name.
     /// </summary>
     string GetWindowClass(IntPtr hWnd);

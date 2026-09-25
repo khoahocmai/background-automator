@@ -10,7 +10,9 @@ public sealed record CommandExtractionResult(
     string? SelectedOptionText = null,
     bool IsApprovalPromptVisible = false,
     bool IsYesOptionSelected = false,
-    string? FailureReason = null)
+    string? FailureReason = null,
+    bool IsAmbiguous = false,
+    string? AmbiguityReason = null)
 {
     public static CommandExtractionResult Successful(
         string commandText,
@@ -38,4 +40,19 @@ public sealed record CommandExtractionResult(
             IsApprovalPromptVisible: isPromptVisible,
             IsYesOptionSelected: isOptionSelected,
             FailureReason: failureReason);
+
+    public static CommandExtractionResult Ambiguous(
+        string ambiguityReason,
+        string? promptText = null,
+        string? selectedOptionText = null) =>
+        new(
+            Success: false,
+            CommandText: null,
+            PromptText: promptText,
+            SelectedOptionText: selectedOptionText,
+            IsApprovalPromptVisible: true,
+            IsYesOptionSelected: true,
+            FailureReason: ambiguityReason,
+            IsAmbiguous: true,
+            AmbiguityReason: ambiguityReason);
 }

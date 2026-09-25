@@ -199,6 +199,100 @@ Run this command?
     }
 
     [Fact]
+    public void Parse_Extracts_Multiline_Pipe_Continuation_Command()
+    {
+        string rawText = @"
+Get-ChildItem ""D:\workspace\very-long-path"" |
+  Where-Object { $_.Name -like ""*.json"" }
+
+Run this command?
+> 1. Yes, run command
+  2. No, do not run
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(@"Get-ChildItem ""D:\workspace\very-long-path"" | Where-Object { $_.Name -like ""*.json"" }", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Extracts_Multiline_Backtick_Continuation_Command()
+    {
+        string rawText = @"
+Get-ChildItem `
+  -Path D:\workspace `
+  -Recurse
+
+Run this command?
+> 1. Yes, run command
+  2. No, do not run
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(@"Get-ChildItem -Path D:\workspace -Recurse", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Extracts_Multiline_Tool_Wrapper_Command()
+    {
+        string rawText = @"
+● Bash(
+  git status
+)
+
+Run this command?
+> 1. Yes, run command
+  2. No, do not run
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal("git status", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Returns_Ambiguous_When_Multiple_Tool_Blocks_Precede_Prompt()
+    {
+        string rawText = @"
+● Bash(git status)
+● Bash(git diff)
+
+Run this command?
+> 1. Yes, run command
+  2. No, do not run
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.True(result.IsAmbiguous);
+        Assert.Null(result.CommandText);
+        Assert.Contains("Multiple conflicting command candidates", result.AmbiguityReason);
+    }
+
+    [Fact]
+    public void Parse_Returns_Ambiguous_When_Multiple_Raw_Lines_Precede_Prompt()
+    {
+        string rawText = @"
+git pull
+git status
+
+Run this command?
+> 1. Yes, run command
+  2. No, do not run
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.True(result.IsAmbiguous);
+        Assert.Null(result.CommandText);
+        Assert.Contains("Multiple conflicting command candidates", result.AmbiguityReason);
+    }
+
+    [Fact]
     public void Parse_Returns_Failure_On_Null_Or_Empty_Input()
     {
         var resultNull = _parser.Parse(null);

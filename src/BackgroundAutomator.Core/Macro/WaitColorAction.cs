@@ -94,6 +94,11 @@ public sealed class WaitColorAction : IMacroAction
 
             if (capture == null)
             {
+                if (ct.IsCancellationRequested)
+                {
+                    return MacroActionResult.Cancelled();
+                }
+
                 if (!User32.IsWindow(targetHwnd))
                 {
                     return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed during WaitColor.");

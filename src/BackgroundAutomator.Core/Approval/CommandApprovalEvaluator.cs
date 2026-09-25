@@ -32,6 +32,14 @@ public static class CommandApprovalEvaluator
                 $"Approval rule '{rule.Name}' is disabled.");
         }
 
+        // 0. Ambiguity check: fail closed if multiple plausible candidates or conflicting prompts detected
+        if (snapshot.IsAmbiguous)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.AmbiguousPrompt,
+                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+        }
+
         // 1. Target process matching
         if (!string.IsNullOrWhiteSpace(rule.ExpectedProcess) && !string.IsNullOrWhiteSpace(actualProcessName))
         {

@@ -19,6 +19,7 @@ public sealed class MacroExecutionContext
     public IWindowForegroundService ForegroundService { get; }
     public ITextDetectionService TextDetector { get; }
     public ICommandPromptParser CommandPromptParser { get; }
+    public Security.ProcessElevationService ElevationService { get; }
     public IAppLogger? Logger { get; }
     public IntPtr TargetHwnd { get; set; }
 
@@ -31,7 +32,8 @@ public sealed class MacroExecutionContext
         ITextDetectionService? textDetector = null,
         IForegroundKeyboard? foregroundKeyboard = null,
         IWindowForegroundService? foregroundService = null,
-        ICommandPromptParser? commandPromptParser = null)
+        ICommandPromptParser? commandPromptParser = null,
+        Security.ProcessElevationService? elevationService = null)
     {
         Clicker = clicker ?? throw new ArgumentNullException(nameof(clicker));
         CaptureService = captureService ?? throw new ArgumentNullException(nameof(captureService));
@@ -40,6 +42,7 @@ public sealed class MacroExecutionContext
         ForegroundKeyboard = foregroundKeyboard ?? new ForegroundKeyboardEngine(logger);
         ForegroundService = foregroundService ?? new Win32WindowForegroundService(logger);
         CommandPromptParser = commandPromptParser ?? new CommandPromptParser();
+        ElevationService = elevationService ?? new Security.ProcessElevationService(logger);
         Logger = logger;
         TargetHwnd = targetHwnd;
     }

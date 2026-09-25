@@ -170,6 +170,7 @@ Run this command?
    - Câu hỏi xác nhận đang hiển thị (`ExpectedPrompt`, ví dụ: `Run this command?`).
    - Lựa chọn đồng ý đang được chọn (`ExpectedSelectedOption`, ví dụ: `Yes, run command`).
    - Câu lệnh trích xuất được khớp chính xác với `AllowedCommand`.
+   - **Xử lý lệnh nhiều dòng & mập mờ (Fail-Closed)**: Bộ phân tích hỗ trợ các lệnh nối dòng (`|`, `` ` ``, `\`, dòng thụt lề) và wrapper (`● Bash(...)`). Nếu phát hiện nhiều ứng viên lệnh độc lập hoặc định dạng không rõ ràng, hệ thống sẽ chặn với lý do `AmbiguousPrompt` thay vì đoán bừa.
 
 #### Chế độ Observe-Only (Chỉ quan sát — Mặc định):
 - Khi thêm một hành động Safe Auto-Confirm mới, phần mềm mặc định đặt chế độ là **Observe-Only**.
@@ -181,14 +182,15 @@ Run this command?
 #### Cơ chế Foreground Pulse (Kích hoạt chớp nhoáng & Phục hồi):
 - Modern Terminal (Windows Terminal / ConPTY) không nhận phím gửi ngầm qua `PostMessage`.
 - Ở chế độ **Confirm**, phần mềm thực hiện quy trình bảo vệ nhiều lớp:
-  1. Kiểm tra cửa sổ Terminal: Nếu đang bị thu nhỏ (Minimized), hủy bỏ an toàn (`TargetUnavailable`).
-  2. Ghi nhớ handle cửa sổ bạn đang làm việc (`previousForeground`).
-  3. Đưa Terminal lên trên cùng (`SetForegroundWindow`) và đợi xác nhận đã active.
-  4. **Kiểm tra lại toàn diện lần 2**: Đọc lại vùng nhìn thấy (`VisibleViewportOnly`), bóc tách lại câu lệnh và đánh giá lại quy tắc. Nếu có bất kỳ thay đổi nào, hủy bỏ ngay lập tức.
-  5. **Chống cướp tiêu điểm (Focus Race Guard)**: Ngay sát trước lúc gọi `SendInput`, kiểm tra lại nếu một cửa sổ khác bất ngờ nhảy lên cướp tiêu điểm, lập tức hủy bỏ.
-  6. Gửi phím Enter qua `SendInput`.
-  7. Chờ hộp thoại xác nhận biến mất (tối đa 2.000 ms) để đảm bảo không gửi thừa phím Enter thứ hai.
-  8. **Khôi phục tiêu điểm**: Tự động trả tiêu điểm về cửa sổ bạn đang làm việc dở dang trong khối `finally`.
+  1. **Kiểm tra đặc quyền (UIPI Guard)**: Nếu BackgroundAutomator chạy quyền thường (standard user) trong khi Windows Terminal chạy Administrator, hệ thống lập tức chặn với lý do `UipiMismatch`, tuyệt đối không cố kích hoạt cửa sổ hay gửi phím.
+  2. **Kiểm tra cửa sổ Terminal**: Nếu đang bị thu nhỏ (Minimized), hủy bỏ an toàn (`TargetUnavailable`).
+  3. Ghi nhớ handle cửa sổ bạn đang làm việc (`previousForeground`).
+  4. Đưa Terminal lên trên cùng (`SetForegroundWindow`) và đợi xác nhận đã active.
+  5. **Kiểm tra lại toàn diện lần 2**: Đọc lại vùng nhìn thấy (`VisibleViewportOnly`), bóc tách lại câu lệnh, đối chiếu định danh tiến trình và đánh giá lại quy tắc. Nếu có bất kỳ thay đổi nào, hủy bỏ ngay lập tức.
+  6. **Thu hẹp tranh chấp tiêu điểm (Focus Race Guard)**: Ngay sát trước lúc gọi `SendInput`, kiểm tra đồng bộ (không có độ trễ async) để xác nhận cửa sổ Terminal vẫn đang giữ tiêu điểm. Nếu một cửa sổ khác bất ngờ nhảy lên cướp tiêu điểm, lập tức hủy bỏ. (Lưu ý: cơ chế cooperative focus của Windows Win32 có giới hạn nền tảng nếu có tiến trình khác can thiệp cùng microsecond, nhưng khoảng thời gian rủi ro đã được triệt tiêu tối đa).
+  7. Gửi duy nhất 1 phím Enter qua `SendInput` (tuyệt đối không retry gửi phím lần hai).
+  8. Chờ fingerprint của prompt hiện tại biến mất (tối đa 2.000 ms) để xác nhận Terminal đã tiếp nhận lệnh.
+  9. **Khôi phục tiêu điểm**: Tự động trả tiêu điểm về cửa sổ bạn đang làm việc dở dang trong khối `finally` (nếu cửa sổ cũ vẫn còn tồn tại).
 
 ---
 

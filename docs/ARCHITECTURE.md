@@ -419,24 +419,28 @@ Dispatches keyboard inputs with explicit delivery strategies:
 ### 3.14. Safe Auto-Confirm Macro Action (`BackgroundAutomator.Core.Macro.SafeAutoConfirmAction`)
 
 Combines UIA detection, prompt parsing, rule evaluation, and a verified foreground pulse into a hardened, fail-closed macro action:
-1. **Background Phase**:
+1. **Background Phase & Privilege Guard**:
+   - Queries `ProcessElevationService.CheckElevationCompatibility(targetHwnd)`. If BackgroundAutomator is standard user and target is Administrator, fails closed immediately with `ApprovalBlockReason.UipiMismatch` (zero activation, zero keystrokes).
    - Queries UIA for visible viewport text (`VisibleViewportOnly`).
-   - Parses snapshot and evaluates approval rule.
+   - Parses snapshot using `CommandPromptParser` (handles multiline continuation via `|`, `` ` ``, `\`, indentation, and tool wrappers). If multiple independent candidate commands are detected, snapshot is marked `IsAmbiguous` and evaluator blocks with `ApprovalBlockReason.AmbiguousPrompt` (fail-closed).
+   - Evaluates approval rule against target process, window class, prompt, selected option, and exact command.
    - If blocked, logs reason and aborts with `MacroActionStatus.ApprovalBlocked`.
-   - If in `ObserveOnly` mode, logs `[ObserveOnly] WOULD APPROVE: <command>` and completes with `Success`.
+   - If in `ObserveOnly` mode, logs `[ObserveOnly] WOULD APPROVE: <command>` and completes with `Success` without performing any activation or input injection.
 2. **Foreground Transition Phase**:
    - Checks if target window is minimized (`IsIconic`). If minimized, aborts with `TargetUnavailable`.
    - Records currently focused window (`previousForeground = GetForegroundWindow()`).
    - Requests foreground activation for the target root window (`SetForegroundWindow`).
    - Polls until target is confirmed active foreground window (with timeout).
 3. **Revalidation & Keystroke Phase**:
+   - Re-queries root HWND, process identity, and window class to detect target swaps or closure.
+   - Re-checks UIPI elevation compatibility.
    - Re-reads UIA visible viewport text to guard against UI changes during activation.
    - Re-parses prompt snapshot and re-evaluates rule.
-   - **Focus Race Protection**: Immediately before calling `SendInput`, verifies that `GetForegroundWindow() == targetRootHwnd`. If focus was stolen by another app, immediately aborts without sending keystrokes.
-   - Dispatches Enter (`SendInput`).
-   - Polls for prompt disappearance (up to 2,000ms) to ensure the target accepted the command and prevent duplicate Enter dispatch.
+   - **Focus Race Mitigation**: Win32 window focus is cooperative; the OS cannot provide a single atomic "test-focus-and-send-input" kernel primitive across processes. BackgroundAutomator minimizes this race window to near-zero by synchronously checking `GetForegroundWindow() == targetRootHwnd` directly before `SendInput` with **zero intervening awaits or thread context switches**. If focus was stolen by another window, it aborts immediately with `ApprovalFailed` without sending keystrokes.
+   - Dispatches exactly one Enter key-down/key-up pair (`SendInput`). Never retries blindly on the same action invocation.
+   - **Fingerprint-Based Acknowledgment**: Polls (up to 2,000ms) for prompt disappearance using the specific prompt snapshot fingerprint (expected command text and selected option). If the initial prompt disappears or is superseded by a subsequent prompt, Prompt A is safely recognized as acknowledged without approving Prompt B.
 4. **Cleanup Phase (`finally`)**:
-   - Always restores `previousForeground` window, returning user desktop focus back to normal seamlessly.
+   - Restores `previousForeground` window via `SetForegroundWindow` if `User32.IsWindow(previousForeground)` is still valid. If the previous window was closed during the pulse, the failure to restore focus does not mask a successful command approval.
 
 ---
 
