@@ -10,6 +10,7 @@ using BackgroundAutomator.Core.Keyboard;
 using BackgroundAutomator.Core.Logging;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Targeting;
+using BackgroundAutomator.Core.TextDetection;
 
 namespace BackgroundAutomator.App.ViewModels;
 
@@ -27,6 +28,8 @@ public sealed partial class MacroViewModel : ObservableObject
     public ObservableCollection<MacroActionItem> Actions { get; } = new();
 
     public IReadOnlyList<BackgroundKey> AvailableKeys { get; } = Enum.GetValues<BackgroundKey>();
+
+    public IReadOnlyList<TextMatchMode> AvailableMatchModes { get; } = Enum.GetValues<TextMatchMode>();
 
     [ObservableProperty]
     private BackgroundKey _selectedKey = BackgroundKey.Enter;
@@ -70,6 +73,18 @@ public sealed partial class MacroViewModel : ObservableObject
 
     [ObservableProperty]
     private int _waitColorTimeoutMs = 5000;
+
+    [ObservableProperty]
+    private string _waitForTextExpected = "Run this command?";
+
+    [ObservableProperty]
+    private TextMatchMode _waitForTextMatchMode = TextMatchMode.Contains;
+
+    [ObservableProperty]
+    private int _waitForTextPollIntervalMs = 500;
+
+    [ObservableProperty]
+    private int _waitForTextTimeoutMs = 60000;
 
     public MacroViewModel(
         MacroRunner macroRunner,
@@ -247,6 +262,26 @@ public sealed partial class MacroViewModel : ObservableObject
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro WaitColor at ({ActionX}, {ActionY}) RGB({col.R},{col.G},{col.B}) tol={WaitColorTol} timeout={WaitColorTimeoutMs}ms");
+    }
+
+    [RelayCommand]
+    public void AddWaitForTextAction()
+    {
+        if (string.IsNullOrWhiteSpace(WaitForTextExpected))
+        {
+            MessageBox.Show("Please enter expected text to wait for.", "Invalid Text", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var action = new WaitForTextAction(
+            WaitForTextExpected,
+            WaitForTextMatchMode,
+            timeout: TimeSpan.FromMilliseconds(WaitForTextTimeoutMs),
+            pollInterval: TimeSpan.FromMilliseconds(WaitForTextPollIntervalMs));
+
+        Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        StatusText = $"State: IDLE | Actions: {Actions.Count}";
+        _logger.Info($"Added Macro WaitForText: \"{WaitForTextExpected}\" ({WaitForTextMatchMode}, timeout={WaitForTextTimeoutMs}ms, poll={WaitForTextPollIntervalMs}ms)");
     }
 
     [RelayCommand]

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing;
 using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Logging;
@@ -82,7 +82,16 @@ public sealed class WaitColorAction : IMacroAction
                 return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed during WaitColor.");
             }
 
-            WindowCapture? capture = await context.CaptureService.CaptureClientAreaAsync(targetHwnd, ct).ConfigureAwait(false);
+            WindowCapture? capture;
+            try
+            {
+                capture = await context.CaptureService.CaptureClientAreaAsync(targetHwnd, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return MacroActionResult.Cancelled();
+            }
+
             if (capture == null)
             {
                 if (!User32.IsWindow(targetHwnd))

@@ -70,8 +70,8 @@
                     </StackPanel>
                 </TabItem>
 
-                <!-- Condition Tab -->
-                <TabItem Header="Condition">
+                <!-- Wait for Color Tab -->
+                <TabItem Header="Wait for Color">
                     <StackPanel Orientation="Horizontal" Margin="8,12,8,8" VerticalAlignment="Center">
                         <TextBlock Text="X:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
                         <ui:NumberBox Value="{Binding ActionX, Mode=TwoWay}" Minimum="0" Maximum="9999" Width="75" Margin="0,0,10,0" />
@@ -92,6 +92,32 @@
                         <ui:Button Content="+ Add WaitColor"
                                    Appearance="Primary"
                                    Command="{Binding AddWaitColorActionCommand}" />
+                    </StackPanel>
+                </TabItem>
+
+                <!-- Wait for Text Tab -->
+                <TabItem Header="Wait for Text">
+                    <StackPanel Orientation="Horizontal" Margin="8,12,8,8" VerticalAlignment="Center">
+                        <TextBlock Text="Expected text:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                        <ui:TextBox Text="{Binding WaitForTextExpected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="190" Margin="0,0,10,0" />
+
+                        <TextBlock Text="Match:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                        <ComboBox ItemsSource="{Binding AvailableMatchModes}"
+                                  SelectedItem="{Binding WaitForTextMatchMode, Mode=TwoWay}"
+                                  Width="105"
+                                  Margin="0,0,10,0" />
+
+                        <TextBlock Text="Poll:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                        <ui:NumberBox Value="{Binding WaitForTextPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="75" Margin="0,0,4,0" />
+                        <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                        <TextBlock Text="Timeout:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                        <ui:NumberBox Value="{Binding WaitForTextTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="85" Margin="0,0,4,0" />
+                        <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                        <ui:Button Content="+ Add WaitText"
+                                   Appearance="Primary"
+                                   Command="{Binding AddWaitForTextActionCommand}" />
                     </StackPanel>
                 </TabItem>
             </TabControl>

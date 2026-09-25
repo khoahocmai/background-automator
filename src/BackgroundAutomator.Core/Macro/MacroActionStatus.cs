@@ -12,5 +12,6 @@ public enum MacroActionStatus
     CaptureFailed,
     ClickFailed,
     KeyPressFailed,
+    TextDetectionFailed,
     InvalidConfiguration
 }

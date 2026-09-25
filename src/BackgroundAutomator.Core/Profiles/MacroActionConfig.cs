@@ -17,6 +17,8 @@ public sealed class MacroActionConfig
     public int? TimeoutMs { get; set; }
     public int? PollIntervalMs { get; set; }
     public string? Key { get; set; }
+    public string? ExpectedText { get; set; }
+    public string? TextMatchMode { get; set; }
 
     public static MacroActionConfig FromMacroAction(IMacroAction action)
     {
@@ -54,6 +56,14 @@ public sealed class MacroActionConfig
                 ActionType = "PressKey",
                 Key = pka.Key.ToString()
             },
+            WaitForTextAction wta => new MacroActionConfig
+            {
+                ActionType = "WaitForText",
+                ExpectedText = wta.ExpectedText,
+                TextMatchMode = wta.MatchMode.ToString(),
+                TimeoutMs = (int)wta.Timeout.TotalMilliseconds,
+                PollIntervalMs = (int)wta.PollInterval.TotalMilliseconds
+            },
             _ => throw new NotSupportedException($"Macro action type '{action.GetType().Name}' is not supported for serialization.")
         };
     }
@@ -73,8 +83,22 @@ public sealed class MacroActionConfig
                 timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
                 pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null),
             "presskey" => new PressKeyAction(ParseKey(Key)),
+            "waitfortext" => new WaitForTextAction(
+                ExpectedText ?? string.Empty,
+                matchMode: ParseMatchMode(TextMatchMode),
+                timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
+                pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null),
             _ => throw new InvalidOperationException($"Unknown or unsupported macro action type '{ActionType}'.")
         };
+    }
+
+    private static TextDetection.TextMatchMode ParseMatchMode(string? matchMode)
+    {
+        if (Enum.TryParse<TextDetection.TextMatchMode>(matchMode, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return TextDetection.TextMatchMode.Contains;
     }
 
     private static BackgroundAutomator.Core.Keyboard.BackgroundKey ParseKey(string? key)

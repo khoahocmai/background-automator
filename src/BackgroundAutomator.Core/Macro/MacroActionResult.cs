@@ -28,6 +28,9 @@ public sealed record MacroActionResult(MacroActionStatus Status, string? Message
     public static MacroActionResult KeyPressFailed(string message = "Failed to dispatch background key press.") =>
         new(MacroActionStatus.KeyPressFailed, message);
 
+    public static MacroActionResult TextDetectionFailed(string message = "Failed to detect text in target window.") =>
+        new(MacroActionStatus.TextDetectionFailed, message);
+
     public static MacroActionResult InvalidConfiguration(string message = "Invalid action configuration parameters.") =>
         new(MacroActionStatus.InvalidConfiguration, message);
 

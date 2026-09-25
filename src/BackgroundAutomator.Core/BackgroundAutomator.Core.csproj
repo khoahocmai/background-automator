@@ -14,4 +14,8 @@
     <ProjectReference Include="..\BackgroundAutomator.Win32\BackgroundAutomator.Win32.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App.WPF" />
+  </ItemGroup>
+
 </Project>

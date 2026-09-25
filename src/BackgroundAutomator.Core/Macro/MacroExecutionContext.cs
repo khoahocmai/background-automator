@@ -2,6 +2,7 @@ using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
 using BackgroundAutomator.Core.Keyboard;
 using BackgroundAutomator.Core.Logging;
+using BackgroundAutomator.Core.TextDetection;
 
 namespace BackgroundAutomator.Core.Macro;
 
@@ -13,6 +14,7 @@ public sealed class MacroExecutionContext
     public IBackgroundClicker Clicker { get; }
     public IWindowCaptureService CaptureService { get; }
     public IBackgroundKeyboard Keyboard { get; }
+    public ITextDetectionService TextDetector { get; }
     public IAppLogger? Logger { get; }
     public IntPtr TargetHwnd { get; set; }
 
@@ -21,11 +23,13 @@ public sealed class MacroExecutionContext
         IWindowCaptureService captureService,
         IAppLogger? logger = null,
         IntPtr targetHwnd = default,
-        IBackgroundKeyboard? keyboard = null)
+        IBackgroundKeyboard? keyboard = null,
+        ITextDetectionService? textDetector = null)
     {
         Clicker = clicker ?? throw new ArgumentNullException(nameof(clicker));
         CaptureService = captureService ?? throw new ArgumentNullException(nameof(captureService));
         Keyboard = keyboard ?? new BackgroundKeyboardEngine(logger);
+        TextDetector = textDetector ?? new UiAutomationTextDetectionService(logger);
         Logger = logger;
         TargetHwnd = targetHwnd;
     }
