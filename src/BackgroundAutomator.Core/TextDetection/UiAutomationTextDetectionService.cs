@@ -173,8 +173,9 @@ public sealed class UiAutomationTextDetectionService : ITextDetectionService
             // A. TextPattern (richest accessibility text provider, used by Windows Terminal, Word, RichEdit)
             if (element.TryGetCurrentPattern(TextPattern.Pattern, out object tpObj) && tpObj is TextPattern tp)
             {
-                // When VisibleOnly is requested, check the visible viewport first
-                if (request.VisibleOnly)
+                // When VisibleViewportOnly is requested, strictly inspect visible viewport ranges only.
+                // Do NOT fall back to DocumentRange because DocumentRange contains scrolled-away history prompts.
+                if (request.Scope == TextDetectionScope.VisibleViewportOnly)
                 {
                     try
                     {
@@ -187,38 +188,53 @@ public sealed class UiAutomationTextDetectionService : ITextDetectionService
                                 sbVis.Append(r.GetText(-1));
                             }
 
-                            string visText = sbVis.ToString();
-                            if (!string.IsNullOrEmpty(visText))
+                            string rawVisText = sbVis.ToString();
+                            if (!string.IsNullOrEmpty(rawVisText))
                             {
-                                if (TextMatcher.IsMatch(visText, request.ExpectedText, request.MatchMode))
+                                if (TextMatcher.IsMatch(rawVisText, request.ExpectedText, request.MatchMode))
                                 {
-                                    result = TextDetectionResult.Success(visText);
+                                    result = TextDetectionResult.Success(rawVisText, rawVisText);
                                     return true;
                                 }
 
-                                result = TextDetectionResult.NotFound(visText);
+                                result = TextDetectionResult.NotFound(rawVisText, $"Expected text '{request.ExpectedText}' was not found in visible viewport.", rawVisText);
+                                return false;
                             }
                         }
+
+                        // Visible ranges extraction returned null or empty
+                        result = TextDetectionResult.Failed("Failed to extract visible viewport ranges from target control.");
+                        return false;
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Some controls may throw or return empty from GetVisibleRanges; fallback to DocumentRange
+                        // Explicitly fail closed: do NOT search terminal history when VisibleViewportOnly is requested
+                        result = TextDetectionResult.Failed($"Visible viewport extraction failed: {ex.Message}");
+                        return false;
                     }
                 }
-
-                // If VisibleOnly was not requested, or visible ranges didn't match / weren't available, check full document range
-                if (!request.VisibleOnly)
+                else
                 {
-                    string fullText = tp.DocumentRange.GetText(-1);
-                    if (!string.IsNullOrEmpty(fullText))
+                    // DocumentBuffer scope: inspect full document range
+                    try
                     {
-                        if (TextMatcher.IsMatch(fullText, request.ExpectedText, request.MatchMode))
+                        string fullText = tp.DocumentRange.GetText(-1);
+                        if (!string.IsNullOrEmpty(fullText))
                         {
-                            result = TextDetectionResult.Success(fullText);
-                            return true;
-                        }
+                            if (TextMatcher.IsMatch(fullText, request.ExpectedText, request.MatchMode))
+                            {
+                                result = TextDetectionResult.Success(fullText, fullText);
+                                return true;
+                            }
 
-                        result = TextDetectionResult.NotFound(fullText);
+                            result = TextDetectionResult.NotFound(fullText, $"Expected text '{request.ExpectedText}' was not found in document buffer.", fullText);
+                            return false;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        result = TextDetectionResult.Failed($"Document buffer extraction failed: {ex.Message}");
+                        return false;
                     }
                 }
             }
@@ -231,11 +247,11 @@ public sealed class UiAutomationTextDetectionService : ITextDetectionService
                 {
                     if (TextMatcher.IsMatch(val, request.ExpectedText, request.MatchMode))
                     {
-                        result = TextDetectionResult.Success(val);
+                        result = TextDetectionResult.Success(val, val);
                         return true;
                     }
 
-                    result = TextDetectionResult.NotFound(val);
+                    result = TextDetectionResult.NotFound(val, $"Expected text '{request.ExpectedText}' was not found in control value.", val);
                 }
             }
 
@@ -245,11 +261,11 @@ public sealed class UiAutomationTextDetectionService : ITextDetectionService
             {
                 if (TextMatcher.IsMatch(name, request.ExpectedText, request.MatchMode))
                 {
-                    result = TextDetectionResult.Success(name);
+                    result = TextDetectionResult.Success(name, name);
                     return true;
                 }
 
-                result = TextDetectionResult.NotFound(name);
+                result = TextDetectionResult.NotFound(name, $"Expected text '{request.ExpectedText}' was not found in control name.", name);
             }
         }
         catch

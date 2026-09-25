@@ -5,12 +5,39 @@ namespace BackgroundAutomator.Core.TextDetection;
 /// <summary>
 /// Parameters for a text detection query.
 /// </summary>
-/// <param name="ExpectedText">The text string expected to appear in the target window.</param>
-/// <param name="MatchMode">Match comparison mode (Contains or Exact).</param>
-/// <param name="VisibleOnly">If true, prioritizes currently visible viewport text (e.g. terminal visible ranges) to prevent stale history matches.</param>
-/// <param name="Region">Optional sub-region bounds if a specific bounding box is targeted.</param>
-public sealed record TextDetectionRequest(
-    string ExpectedText,
-    TextMatchMode MatchMode = TextMatchMode.Contains,
-    bool VisibleOnly = true,
-    Rectangle? Region = null);
+public sealed record TextDetectionRequest
+{
+    public string ExpectedText { get; init; }
+    public TextMatchMode MatchMode { get; init; }
+    public TextDetectionScope Scope { get; init; }
+    public Rectangle? Region { get; init; }
+
+    /// <summary>
+    /// Backward-compatible property indicating whether inspection is restricted to the visible viewport.
+    /// </summary>
+    public bool VisibleOnly => Scope == TextDetectionScope.VisibleViewportOnly;
+
+    public TextDetectionRequest(
+        string expectedText,
+        TextMatchMode matchMode = TextMatchMode.Contains,
+        TextDetectionScope scope = TextDetectionScope.VisibleViewportOnly,
+        Rectangle? region = null)
+    {
+        ExpectedText = expectedText;
+        MatchMode = matchMode;
+        Scope = scope;
+        Region = region;
+    }
+
+    /// <summary>
+    /// Backward-compatible constructor accepting a boolean VisibleOnly parameter.
+    /// </summary>
+    public TextDetectionRequest(
+        string expectedText,
+        TextMatchMode matchMode,
+        bool VisibleOnly,
+        Rectangle? region = null)
+        : this(expectedText, matchMode, VisibleOnly ? TextDetectionScope.VisibleViewportOnly : TextDetectionScope.DocumentBuffer, region)
+    {
+    }
+}

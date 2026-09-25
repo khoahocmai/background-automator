@@ -112,19 +112,24 @@ BackgroundAutomator hỗ trợ phím tắt toàn hệ thống, hoạt động ng
 
 ## 6. Macro Mode (Kịch bản tự động hóa nâng cao)
 
-Chế độ **Macro Mode** cho phép kết hợp các hành động phức tạp theo kịch bản logic gồm: Click, DoubleClick, Delay (chờ thời gian) và WaitColor (chờ màu sắc).
+Chế độ **Macro Mode** cho phép kết hợp các hành động phức tạp theo kịch bản logic gồm: Click, DoubleClick, PressKey, Delay, WaitColor, WaitForText và SafeAutoConfirm.
 
 <!-- TODO: Screenshot giao diện Macro Mode -->
 
 ### 6.1. Các hành động hỗ trợ
 * **Click**: Click đơn vào tọa độ (X, Y).
 * **DoubleClick**: Click đúp vào tọa độ (X, Y).
+* **PressKey**: Nhấn phím bàn phím ở chế độ ngầm (`Enter`, `Tab`, `Escape`, `Space`, các phím mũi tên) qua Win32 `PostMessage` mà không chiếm chuột/bàn phím thật.
 * **Delay**: Tạm dừng kịch bản trong khoảng thời gian chỉ định (ví dụ: 500 ms) trước khi sang bước tiếp theo.
 * **WaitColor**: Liên tục kiểm tra màu của điểm ảnh tại tọa độ (X, Y) của cửa sổ mục tiêu:
   * **Color (RGB)**: Màu sắc cần xuất hiện (chọn qua bảng màu trực quan).
   * **Tolerance (Tol)**: Độ sai lệch màu cho phép (từ 0 đến 255; khuyến nghị 5–15 nếu game/ứng dụng có đổ bóng hoặc khử răng cưa).
   * **Timeout**: Thời gian tối đa cho phép chờ (ms). Nếu hết thời gian mà màu chưa xuất hiện, macro sẽ dừng lại báo Timeout.
   * **Poll Interval**: Tần suất kiểm tra định kỳ (khoảng 50 ms/lần).
+* **WaitForText**: Chờ chuỗi ký tự xuất hiện trên cửa sổ thông qua Windows UI Automation (UIA) với độ chính xác tuyệt đối (không lỗi nhận diện ký tự như OCR):
+  * **Expected Text**: Văn bản cần xuất hiện (hỗ trợ chế độ tìm kiếm `Contains` hoặc `Exact`).
+  * **Scope**: Giới hạn trong vùng hiển thị thực tế (`VisibleViewportOnly`) để tránh đọc trúng các dòng văn bản cũ đã cuộn mất.
+* **SafeAutoConfirm**: Tự động phát hiện và xác nhận lệnh Terminal có kiểm duyệt (xem chi tiết mục 6.3).
 
 ### 6.2. Ví dụ tạo kịch bản thực tế
 Kịch bản: Click mở hộp quà → Chờ 500ms → Đợi thanh trạng thái chuyển màu Xanh lá (Green) → Click đúp để xác nhận:
@@ -145,6 +150,45 @@ Kịch bản: Click mở hộp quà → Chờ 500ms → Đợi thanh trạng th�
 3. Nhập X=250, Y=80, bấm nút **Color** chọn màu Xanh lá, chỉnh Tol=10, Timeout=5000 → Bấm **+ Add WaitColor**.
 4. Nhập X=300, Y=200 → Bấm **+ Add DoubleClick**.
 5. Bấm **▶ Run Macro** để khởi chạy kịch bản.
+
+---
+
+### 6.3. Tính năng Safe Auto-Confirm (Xác nhận lệnh Terminal có kiểm duyệt)
+
+Tính năng chuyên biệt cho phép tự động phê duyệt các hộp thoại xác nhận chạy lệnh của AI Agent / CLI (ví dụ Antigravity hoặc Claude Code):
+
+```text
+Run this command?
+> 1. Yes, run command
+```
+
+#### Nguyên tắc An toàn Tuyệt đối (Fail-Closed):
+1. **Không phê duyệt mù quáng**: Phần mềm không bao giờ bấm Enter tự do mỗi khi nhìn thấy chữ `Run this command?`.
+2. **Không dùng wildcard toàn bộ**: Chỉ cho phép chạy đúng câu lệnh nằm trong danh sách cho phép (Allowlist) với chế độ so khớp chính xác (`Exact`).
+3. **Kiểm tra đa điều kiện**: Bắt buộc thỏa mãn đồng thời:
+   - Tiến trình mục tiêu khớp (`ExpectedProcess`, ví dụ: `WindowsTerminal`).
+   - Câu hỏi xác nhận đang hiển thị (`ExpectedPrompt`, ví dụ: `Run this command?`).
+   - Lựa chọn đồng ý đang được chọn (`ExpectedSelectedOption`, ví dụ: `Yes, run command`).
+   - Câu lệnh trích xuất được khớp chính xác với `AllowedCommand`.
+
+#### Chế độ Observe-Only (Chỉ quan sát — Mặc định):
+- Khi thêm một hành động Safe Auto-Confirm mới, phần mềm mặc định đặt chế độ là **Observe-Only**.
+- Ở chế độ này, bộ nhận diện vẫn chạy, phân tích câu lệnh và đối chiếu Allowlist:
+  - Nếu hợp lệ: Ghi log `[ObserveOnly] WOULD APPROVE: <command>` và kết thúc thành công.
+  - Tuyệt đối **KHÔNG gửi phím Enter** và **KHÔNG kích hoạt cửa sổ**.
+- Giúp người dùng kiểm chứng độ chính xác của bộ lọc trước khi chuyển sang chế độ thực thi thật.
+
+#### Cơ chế Foreground Pulse (Kích hoạt chớp nhoáng & Phục hồi):
+- Modern Terminal (Windows Terminal / ConPTY) không nhận phím gửi ngầm qua `PostMessage`.
+- Ở chế độ **Confirm**, phần mềm thực hiện quy trình bảo vệ nhiều lớp:
+  1. Kiểm tra cửa sổ Terminal: Nếu đang bị thu nhỏ (Minimized), hủy bỏ an toàn (`TargetUnavailable`).
+  2. Ghi nhớ handle cửa sổ bạn đang làm việc (`previousForeground`).
+  3. Đưa Terminal lên trên cùng (`SetForegroundWindow`) và đợi xác nhận đã active.
+  4. **Kiểm tra lại toàn diện lần 2**: Đọc lại vùng nhìn thấy (`VisibleViewportOnly`), bóc tách lại câu lệnh và đánh giá lại quy tắc. Nếu có bất kỳ thay đổi nào, hủy bỏ ngay lập tức.
+  5. **Chống cướp tiêu điểm (Focus Race Guard)**: Ngay sát trước lúc gọi `SendInput`, kiểm tra lại nếu một cửa sổ khác bất ngờ nhảy lên cướp tiêu điểm, lập tức hủy bỏ.
+  6. Gửi phím Enter qua `SendInput`.
+  7. Chờ hộp thoại xác nhận biến mất (tối đa 2.000 ms) để đảm bảo không gửi thừa phím Enter thứ hai.
+  8. **Khôi phục tiêu điểm**: Tự động trả tiêu điểm về cửa sổ bạn đang làm việc dở dang trong khối `finally`.
 
 ---
 

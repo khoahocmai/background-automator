@@ -195,8 +195,15 @@ public class KeyboardIntegrationTests
     }
 
     [Fact]
+    [Trait("Category", "ManualDiagnostic")]
     public void RealWorld_Terminal_Keyboard_Diagnostics()
     {
+        if (Environment.GetEnvironmentVariable("BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS") != "1")
+        {
+            _output.WriteLine("[OPT-IN] Skipped. Set BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=1 to run interactive terminal diagnostics.");
+            return;
+        }
+
         var thread = new Thread(() =>
         {
             IntPtr hDesk = User32.OpenDesktop("default", 0, false, 0x01FF);

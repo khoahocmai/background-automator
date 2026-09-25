@@ -18,6 +18,17 @@ public static class User32
     public static extern IntPtr GetForegroundWindow();
 
     [DllImport(User32Dll, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport(User32Dll)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport(User32Dll, SetLastError = true)]
+    public static extern uint SendInput(uint nInputs, [MarshalAs(UnmanagedType.LPArray), In] INPUT[] pInputs, int cbSize);
+
+    [DllImport(User32Dll, SetLastError = true)]
     public static extern IntPtr OpenDesktop(string lpszDesktop, uint dwFlags, bool fInherit, uint dwDesiredAccess);
 
     [DllImport(User32Dll, SetLastError = true)]

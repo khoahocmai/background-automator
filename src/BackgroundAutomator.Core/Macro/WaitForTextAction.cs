@@ -18,7 +18,8 @@ public sealed class WaitForTextAction : IMacroAction
     public TextMatchMode MatchMode { get; }
     public TimeSpan Timeout { get; }
     public TimeSpan PollInterval { get; }
-    public bool VisibleOnly { get; }
+    public TextDetectionScope Scope { get; }
+    public bool VisibleOnly => Scope == TextDetectionScope.VisibleViewportOnly;
     public IntPtr OverrideHwnd { get; }
 
     public string Name => "Wait for Text";
@@ -31,15 +32,26 @@ public sealed class WaitForTextAction : IMacroAction
         TextMatchMode matchMode = TextMatchMode.Contains,
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
-        bool visibleOnly = true,
+        TextDetectionScope scope = TextDetectionScope.VisibleViewportOnly,
         IntPtr overrideHwnd = default)
     {
         ExpectedText = expectedText ?? string.Empty;
         MatchMode = matchMode;
         Timeout = timeout ?? DefaultTimeout;
         PollInterval = pollInterval ?? DefaultPollInterval;
-        VisibleOnly = visibleOnly;
+        Scope = scope;
         OverrideHwnd = overrideHwnd;
+    }
+
+    public WaitForTextAction(
+        string expectedText,
+        TextMatchMode matchMode,
+        TimeSpan? timeout,
+        TimeSpan? pollInterval,
+        bool visibleOnly,
+        IntPtr overrideHwnd = default)
+        : this(expectedText, matchMode, timeout, pollInterval, visibleOnly ? TextDetectionScope.VisibleViewportOnly : TextDetectionScope.DocumentBuffer, overrideHwnd)
+    {
     }
 
     public async Task<MacroActionResult> ExecuteAsync(MacroExecutionContext context, CancellationToken ct)
@@ -71,7 +83,7 @@ public sealed class WaitForTextAction : IMacroAction
 
         context.Logger?.Info($"[WaitForText] Started. Expected: \"{ExpectedText}\" (MatchMode: {MatchMode}, Timeout: {Timeout.TotalMilliseconds:F0}ms, Poll: {PollInterval.TotalMilliseconds:F0}ms)");
 
-        var request = new TextDetectionRequest(ExpectedText, MatchMode, VisibleOnly);
+        var request = new TextDetectionRequest(ExpectedText, MatchMode, Scope);
         var sw = Stopwatch.StartNew();
 
         while (true)

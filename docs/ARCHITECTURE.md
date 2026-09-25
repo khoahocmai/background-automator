@@ -30,13 +30,14 @@ The solution follows a strict, unidirectional layered architecture:
 ┌──────────────────────────────▼──────────────────────────────┐
 │                  BackgroundAutomator.Core                     │
 │  (Targeting, Coordinates, Clicking, Runners, Macro Engine,  │
-│   Window Capture, Profiles & Persistence, Security/UIPI)    │
+│   Window Capture, Profiles & Persistence, Security/UIPI,    │
+│   Approval Engine, Keyboard & Foreground Pulse, UIA Text)   │
 └──────────────────────────────┬──────────────────────────────┘
                                │ references
 ┌──────────────────────────────▼──────────────────────────────┐
 │                  BackgroundAutomator.Win32                    │
 │    (Centralized P/Invoke: User32, Gdi32, Kernel32, Advapi32,│
-│     Native Constants, Structs, Message Packing Helpers)     │
+│     SendInput, Native Constants, Structs, Message Packing)  │
 └─────────────────────────────────────────────────────────────┘
 
                   ┌────────────────────────┐
@@ -45,12 +46,12 @@ The solution follows a strict, unidirectional layered architecture:
                   │ BackgroundAutomator.     │
                   │   TestTarget (WinForms)│
                   │ BackgroundAutomator.     │
-                  │   Tests (xUnit / 140+) │
+                  │   Tests (xUnit / 246)  │
                   └────────────────────────┘
 ```
 
 ### Dependency Rules:
-- **`BackgroundAutomator.Win32`** has **zero** dependencies on other solution projects. All native Win32 API declarations, structures (`POINT`, `RECT`), and flags live here. No other project may contain raw `[DllImport]` declarations.
+- **`BackgroundAutomator.Win32`** has **zero** dependencies on other solution projects. All native Win32 API declarations, structures (`POINT`, `RECT`, `INPUT`), and flags live here. No other project may contain raw `[DllImport]` declarations.
 - **`BackgroundAutomator.Core`** depends only on `BackgroundAutomator.Win32`. It contains pure domain logic, background worker loops, serialization models, and abstractions. It has **no dependency** on `BackgroundAutomator.App` or WinForms UI controls.
 - **`BackgroundAutomator.App`** depends on `BackgroundAutomator.Core` and `BackgroundAutomator.Win32`. It hosts the WPF Fluent views, MVVM view models, data binding, and global keyboard hotkeys.
 - **`BackgroundAutomator.TestTarget`** is an isolated, deterministic WinForms harness exposing verifiable controls, click counters, color panels, and a raw Windows message logger.
@@ -64,15 +65,18 @@ The solution follows a strict, unidirectional layered architecture:
 src/
 ├── BackgroundAutomator.Win32/          # Native Interop Layer
 ├── BackgroundAutomator.Core/           # Core Domain & Logic
+│   ├── Approval/                     # Command Prompt Parsing & Safe Approval Engine
 │   ├── Capture/                      # GDI Window Capture & Color Inspection
 │   ├── Clicking/                     # PostMessage Background Click Engine
 │   ├── Coordinates/                  # Screen <-> Client Coordinate Translation
+│   ├── Keyboard/                     # Foreground Keyboard & Window Focus Services
 │   ├── Logging/                      # Diagnostic Logger Abstraction
 │   ├── Macro/                        # Composable Action Engine & Runner
 │   ├── Profiles/                     # Profile Schema, Serialization & Atomic Storage
 │   ├── Runner/                       # Asynchronous Simple Click Runner Loop
 │   ├── Security/                     # Process Elevation & UIPI Detection
-│   └── Targeting/                    # Window Inspection, Resolution & Descriptors
+│   ├── Targeting/                    # Window Inspection, Resolution & Descriptors
+│   └── TextDetection/                # Windows UI Automation Text Extraction
 └── BackgroundAutomator.App/            # WPF Fluent Presentation Layer
     ├── Views/                        # Fluent Pages (Target, Simple, Macro, Profiles, Diag)
     ├── ViewModels/                   # CommunityToolkit MVVM ViewModels
@@ -85,10 +89,15 @@ src/
 ### 3.1. Win32 Native Interop Layer (`BackgroundAutomator.Win32`)
 
 Centralizes all unmanaged interop definitions and low-level bitwise helpers:
-- **[User32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/User32.cs)**: Window enumeration (`EnumWindows`, `EnumChildWindows`), hierarchy inspection (`GetParent`, `GetAncestor`, `WindowFromPoint`, `RealChildWindowFromPoint`), coordinates (`ScreenToClient`, `ClientToScreen`, `GetClientRect`), messaging (`PostMessage`, `SendMessage`), capture (`PrintWindow`, `GetDC`, `ReleaseDC`, `IsHungAppWindow`), hotkeys (`RegisterHotKey`, `UnregisterHotKey`), DPI (`SetProcessDpiAwarenessContext`, `GetDpiForWindow`), and DWM (`DwmGetWindowAttribute` for `DWMWA_CLOAKED`).
+- **[User32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/User32.cs)**: Window enumeration (`EnumWindows`, `EnumChildWindows`), hierarchy inspection (`GetParent`, `GetAncestor`, `WindowFromPoint`, `RealChildWindowFromPoint`), coordinates (`ScreenToClient`, `ClientToScreen`, `GetClientRect`), messaging (`PostMessage`, `SendMessage`), foreground management (`SetForegroundWindow`, `GetForegroundWindow`, `IsIconic`), input injection (`SendInput`), capture (`PrintWindow`, `GetDC`, `ReleaseDC`, `IsHungAppWindow`), hotkeys (`RegisterHotKey`, `UnregisterHotKey`), DPI (`SetProcessDpiAwarenessContext`, `GetDpiForWindow`), and DWM (`DwmGetWindowAttribute` for `DWMWA_CLOAKED`).
 - **[Gdi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Gdi32.cs)**: `CreateCompatibleDC`, `CreateCompatibleBitmap`, `SelectObject`, `DeleteObject`, `DeleteDC`.
 - **[Kernel32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Kernel32.cs)**: Process querying (`OpenProcess`, `CloseHandle`), thread information, error codes.
 - **[Advapi32.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/Advapi32.cs)**: Token security queries (`OpenProcessToken`, `GetTokenInformation`).
+- **[SendInputHelper.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/SendInputHelper.cs)**:
+  - Dispatches synthesized hardware keyboard input packets (`INPUT` with `INPUT_KEYBOARD`) via `User32.SendInput`.
+  - Dispatches discrete key-down and key-up pairs (`SendKeyDownUp`, `SendEnter`).
+- **[KeyboardMessageHelper.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/KeyboardMessageHelper.cs)**:
+  - Generates correct 32-bit `lParam` bitfields for `WM_KEYDOWN` and `WM_KEYUP` background messages, incorporating virtual scan codes via `User32.MapVirtualKey`.
 - **[MouseMessageHelper.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/MouseMessageHelper.cs)**:
   - Packs signed 16-bit coordinates into a 32-bit `LPARAM`:
     ```csharp
@@ -101,7 +110,7 @@ Centralizes all unmanaged interop definitions and low-level bitwise helpers:
     int x = unchecked((short)((long)lParam & 0xFFFF));
     int y = unchecked((short)(((long)lParam >> 16) & 0xFFFF));
     ```
-- **[NativeTypes.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/NativeTypes.cs)**: Value-type structs `POINT` and `RECT` with implicit conversions to/from `System.Drawing.Point` and `System.Drawing.Rectangle`.
+- **[NativeTypes.cs](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Win32/NativeTypes.cs)**: Value-type structs `POINT` and `RECT` (with implicit conversions to/from `System.Drawing`), and `INPUT`, `KEYBDINPUT`, `MOUSEINPUT`, `HARDWAREINPUT` with explicit 64-bit alignment union layout.
 
 ---
 
@@ -352,6 +361,85 @@ Windows enforces **User Interface Privilege Isolation (UIPI)**. Under UIPI, Wind
 
 ---
 
+### 3.11. UI Automation Text Detection Subsystem (`BackgroundAutomator.Core.TextDetection`)
+
+Responsible for reading textual content from background and foreground windows via the Windows UI Automation (UIA) COM accessibility tree:
+- **[IUiAutomationTextDetectionService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/TextDetection/IUiAutomationTextDetectionService.cs)**: Text extraction contract with cancellation support.
+- **[TextDetectionScope](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/TextDetection/TextDetectionScope.cs)**:
+  - `VisibleViewportOnly`: Restricts text extraction strictly to what is currently visible on the screen/control via `TextPattern.GetVisibleRanges()`. Fails closed if visible ranges cannot be obtained.
+  - `DocumentBuffer`: Extracts the entire document/history range (`TextPattern.DocumentRange`).
+- **Visible Viewport Authority Invariant**:
+  - For unattended approval automation, `VisibleViewportOnly` is **mandatory**.
+  - The detector **never** silently falls back from visible ranges to document buffer history, preventing historical scrolled-off prompts from accidentally triggering approvals.
+- **Raw Text Preservation**:
+  - `TextDetectionResult` returns both `ObservedText` (whitespace-collapsed for standard matching) and `RawText` (preserving newlines, column padding, and option markers like `> 1. Yes, run command`).
+
+---
+
+### 3.12. Command Approval Subsystem (`BackgroundAutomator.Core.Approval`)
+
+Responsible for securely parsing terminal prompts and enforcing strict allowlist policies before approving commands:
+- **[ICommandPromptParser](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Approval/ICommandPromptParser.cs)** & **[CommandPromptParser](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Approval/CommandPromptParser.cs)**:
+  - Parses real-world raw terminal text buffers (such as Cascadia / Windows Terminal `TermControl`).
+  - Supports modern AI Agent / CLI prompt wrappers:
+    - Tool blocks: `● Bash(...)` or `● run_command(...)`
+    - Prefixed lines: `Command: ...`
+    - Markdown-style backtick fences: ```` ```sh ... ``` ````
+    - Raw preceding lines above the prompt
+  - Identifies active prompt (`Run this command?`, `Do you want to run this command?`, etc.).
+  - Detects selected option marker (`>`, `❯`, `*`) and extracts selected option text (e.g. `> 1. Yes, run command`).
+  - Returns `CommandPromptSnapshot` (runtime-only snapshot; never persists ephemeral HWNDs).
+- **[CommandApprovalRule](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Approval/CommandApprovalRule.cs)**:
+  - Multi-condition security rule specification: `ExpectedProcess`, `ExpectedWindowClass`, `ExpectedPrompt`, `ExpectedSelectedOption`, `AllowedCommand`, `CommandMatchMode`, and `Enabled`.
+- **[CommandApprovalEvaluator](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Approval/CommandApprovalEvaluator.cs)**:
+  - Evaluates snapshot against rule with fail-closed semantics.
+  - Requires **all** conditions to match: target process, prompt text, selected option, command existence, and exact allowlist match (`CommandMatchMode.Exact`).
+  - Returns explicit blocked reasons: `TargetMismatch`, `PromptNotVisible`, `OptionNotSelected`, `CommandNotFound`, `CommandNotAllowed`, `AmbiguousPrompt`, `DetectionFailed`.
+- **[AutoConfirmExecutionMode](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Approval/AutoConfirmExecutionMode.cs)**:
+  - `ObserveOnly`: Safe dry-run mode that parses, validates, and logs `WOULD APPROVE` or `BLOCKED` without sending any keystrokes. Default for new rules.
+  - `Confirm`: Executes live double-validation and keystroke dispatch.
+
+---
+
+### 3.13. Keyboard & Foreground Pulse Subsystem (`BackgroundAutomator.Core.Keyboard` & `BackgroundAutomator.Win32`)
+
+Dispatches keyboard inputs with explicit delivery strategies:
+- **[KeyDeliveryMode](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Keyboard/KeyDeliveryMode.cs)**:
+  - `BackgroundPostMessage`: Dispatches `WM_KEYDOWN` and `WM_KEYUP` to target HWND without focus changes (used by `PressKeyAction` for standard Win32/WinForms controls).
+  - `ForegroundPulse`: Used for modern terminal surfaces (Windows Terminal / ConPTY) where background window messages are ignored by virtual terminal input processors.
+- **[IForegroundKeyboard](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Keyboard/IForegroundKeyboard.cs)** & **[ForegroundKeyboardEngine](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Keyboard/ForegroundKeyboardEngine.cs)**:
+  - Abstraction over Win32 `SendInput` hardware keystroke synthesizer.
+  - Dispatches `SendEnterAsync` (Enter keydown + keyup).
+- **[IWindowForegroundService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Keyboard/IWindowForegroundService.cs)** & **[Win32WindowForegroundService](file:///d:/personal-project/background-clicker/src/BackgroundAutomator.Core/Keyboard/Win32WindowForegroundService.cs)**:
+  - Encapsulates window focus management: `GetForegroundWindow()`, `SetForegroundWindow(hwnd)`, `IsIconic(hwnd)` (minimized check).
+  - Mockable interface ensuring 100% testability of focus transitions and race conditions without stealing focus during tests.
+
+---
+
+### 3.14. Safe Auto-Confirm Macro Action (`BackgroundAutomator.Core.Macro.SafeAutoConfirmAction`)
+
+Combines UIA detection, prompt parsing, rule evaluation, and a verified foreground pulse into a hardened, fail-closed macro action:
+1. **Background Phase**:
+   - Queries UIA for visible viewport text (`VisibleViewportOnly`).
+   - Parses snapshot and evaluates approval rule.
+   - If blocked, logs reason and aborts with `MacroActionStatus.ApprovalBlocked`.
+   - If in `ObserveOnly` mode, logs `[ObserveOnly] WOULD APPROVE: <command>` and completes with `Success`.
+2. **Foreground Transition Phase**:
+   - Checks if target window is minimized (`IsIconic`). If minimized, aborts with `TargetUnavailable`.
+   - Records currently focused window (`previousForeground = GetForegroundWindow()`).
+   - Requests foreground activation for the target root window (`SetForegroundWindow`).
+   - Polls until target is confirmed active foreground window (with timeout).
+3. **Revalidation & Keystroke Phase**:
+   - Re-reads UIA visible viewport text to guard against UI changes during activation.
+   - Re-parses prompt snapshot and re-evaluates rule.
+   - **Focus Race Protection**: Immediately before calling `SendInput`, verifies that `GetForegroundWindow() == targetRootHwnd`. If focus was stolen by another app, immediately aborts without sending keystrokes.
+   - Dispatches Enter (`SendInput`).
+   - Polls for prompt disappearance (up to 2,000ms) to ensure the target accepted the command and prevent duplicate Enter dispatch.
+4. **Cleanup Phase (`finally`)**:
+   - Always restores `previousForeground` window, returning user desktop focus back to normal seamlessly.
+
+---
+
 ## 4. Key Execution Flows & Diagrams
 
 ### 4.1. Crosshair Window Targeting Flow
@@ -484,17 +572,81 @@ sequenceDiagram
 
 ---
 
+### 4.5. Safe Auto-Confirm Double-Validation Flow (Terminal Foreground Pulse)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Macro as SafeAutoConfirmAction
+    participant UIA as UiAutomationTextDetectionService
+    participant Parser as CommandPromptParser
+    participant Eval as CommandApprovalEvaluator
+    participant FgSvc as IWindowForegroundService
+    participant Key as IForegroundKeyboard
+    participant Target as Terminal Window
+
+    Note over Macro,Target: 1. Background Discovery & Validation
+    Macro->>UIA: DetectTextAsync(VisibleViewportOnly)
+    UIA-->>Macro: TextDetectionResult (RawText)
+    Macro->>Parser: Parse(RawText, target)
+    Parser-->>Macro: CommandPromptSnapshot
+    Macro->>Eval: Evaluate(snapshot, rule)
+    alt Rule Blocked (Reason)
+        Eval-->>Macro: Decision: Blocked (e.g. CommandNotAllowed)
+        Macro-->>Macro: Abort -> MacroActionStatus.ApprovalBlocked
+    else ObserveOnly Mode
+        Eval-->>Macro: Decision: Allowed
+        Macro-->>Macro: Log WOULD APPROVE -> MacroActionStatus.Success (No input)
+    else Confirm Mode
+        Note over Macro,Target: 2. Foreground Pulse & Window State Verification
+        Macro->>FgSvc: IsIconic(rootHwnd)
+        alt Window is Minimized
+            Macro-->>Macro: Abort -> MacroActionStatus.TargetUnavailable
+        end
+        Macro->>FgSvc: GetForegroundWindow() (Save previous Hwnd)
+        Macro->>FgSvc: SetForegroundWindow(rootHwnd)
+        Macro->>FgSvc: Poll GetForegroundWindow() == rootHwnd
+
+        Note over Macro,Target: 3. Re-Validation in Foreground State
+        Macro->>UIA: DetectTextAsync(VisibleViewportOnly)
+        UIA-->>Macro: Fresh RawText
+        Macro->>Parser: Parse(Fresh RawText, target)
+        Macro->>Eval: Evaluate(freshSnapshot, rule)
+        alt Rule No Longer Matches
+            Macro-->>Macro: Abort -> MacroActionStatus.ApprovalBlocked
+        else Still Allowed
+            Note over Macro,Target: 4. Final Focus Race Guard & Keystroke
+            Macro->>FgSvc: GetForegroundWindow() == rootHwnd
+            alt Focus Stolen by Another App
+                Macro-->>Macro: Abort -> MacroActionStatus.ApprovalFailed
+            else Still Foreground
+                Macro->>Key: SendEnterAsync()
+                Key-->>Target: SendInput(VK_RETURN Down + Up)
+                Note over Macro,Target: 5. Acknowledgment Wait
+                loop Until Prompt Disappears (max 2000ms)
+                    Macro->>UIA: DetectTextAsync(VisibleViewportOnly)
+                end
+            end
+        end
+        Note over Macro,Target: 6. Always Restore Previous Foreground (finally)
+        Macro->>FgSvc: SetForegroundWindow(previousForegroundHwnd)
+    end
+```
+
+---
+
 ## 5. Repository File Map & Responsibilities
 
 | Project / Directory | File | Single Responsibility |
 | :--- | :--- | :--- |
-| **`BackgroundAutomator.Win32`** | `User32.cs` | Win32 windowing, messaging, capture, and hook P/Invoke signatures |
+| **`BackgroundAutomator.Win32`** | `User32.cs` | Win32 windowing, messaging, capture, foreground management, and hook P/Invoke signatures |
 | | `Gdi32.cs` | GDI context and bitmap allocation/deletion P/Invoke signatures |
 | | `Kernel32.cs` | Win32 process handles and thread query P/Invoke signatures |
 | | `Advapi32.cs` | Windows security tokens and elevation P/Invoke signatures |
+| | `SendInputHelper.cs` | Synthesizes hardware keyboard input events via native `SendInput` |
+| | `KeyboardMessageHelper.cs` | Virtual key mapping and 32-bit `LPARAM` generation for `WM_KEYDOWN`/`WM_KEYUP` |
 | | `MouseMessageHelper.cs` | Signed 16-bit `LPARAM` coordinate packing and unpacking |
-| | `NativeConstants.cs` | Centralized constants (`WM_*`, `MK_*`, `PW_*`, `DWMWA_*`, etc.) |
-| | `NativeTypes.cs` | `POINT` and `RECT` interop structs with implicit conversions |
+| | `NativeConstants.cs` | Centralized constants (`WM_*`, `MK_*`, `PW_*`, `INPUT_*`, `KEYEVENTF_*`, etc.) |
+| | `NativeTypes.cs` | `POINT`, `RECT`, and `INPUT` (with 64-bit union layout) interop structs |
 | **`BackgroundAutomator.Core`** | `Targeting/WindowTargetService.cs` | Window enumeration and recursive screen-to-child HWND resolution |
 | | `Targeting/TargetPoint.cs` | Immutable `(HWND, ClientX, ClientY)` coordinate model |
 | | `Targeting/TargetDescriptor.cs` | Durable persistent target metadata without ephemeral HWNDs |
@@ -504,6 +656,14 @@ sequenceDiagram
 | | `Runner/ClickRunner.cs` | Asynchronous simple click loop with CancellationToken support |
 | | `Macro/MacroRunner.cs` | Sequential macro action orchestrator |
 | | `Macro/WaitColorAction.cs` | Polled client-area color matching with tolerance and timeout |
+| | `Macro/PressKeyAction.cs` | Dispatches discrete background keystrokes (`WM_KEYDOWN`/`WM_KEYUP`) |
+| | `Macro/SafeAutoConfirmAction.cs` | Double-validated approval automation with foreground pulse |
+| | `Approval/CommandPromptParser.cs` | Extracts active CLI prompts, option markers, and command lines |
+| | `Approval/CommandApprovalEvaluator.cs` | Evaluates prompts against strict multi-condition allowlist rules |
+| | `Approval/CommandApprovalRule.cs` | Model defining exact allowlist command rules |
+| | `Keyboard/ForegroundKeyboardEngine.cs` | Synthesized hardware keystroke engine implementing `IForegroundKeyboard` |
+| | `Keyboard/Win32WindowForegroundService.cs` | Window activation, state checks, and restoration implementing `IWindowForegroundService` |
+| | `TextDetection/UiAutomationTextDetectionService.cs` | UIA text extraction with visible viewport authority |
 | | `Capture/GdiWindowCaptureService.cs` | Safe client-area capture with single-flight gate and strict GDI lifecycle |
 | | `Capture/WindowCapture.cs` | Managed bitmap wrapper with color tolerance math |
 | | `Profiles/ProfileStorageService.cs` | Atomic `.tmp`-to-replace profile storage in `%LOCALAPPDATA%` |
@@ -515,10 +675,15 @@ sequenceDiagram
 | | `ViewModels/` | MVVM view models for each page and main application state |
 | | `Hotkeys/GlobalHotkeyManager.cs` | Registers and handles system-wide `F6` and `F7` hotkeys |
 | **`BackgroundAutomator.TestTarget`**| `Forms/TestTargetForm.cs` | Real test harness with click counters, message log, and color panels |
-| **`BackgroundAutomator.Tests`** | `WindowCaptureIntegrationTests.cs` | Validates GDI capture against real `TestTarget` |
+| **`BackgroundAutomator.Tests`** | `CommandPromptParserTests.cs` | Verifies parser regexes against real Cascadia terminal snapshots |
+| | `CommandApprovalEvaluatorTests.cs` | Validates multi-condition allowlist evaluator and fail-closed reasons |
+| | `SafeAutoConfirmActionTests.cs` | Mocks focus races, revalidation failures, timeouts, and duplicate protection |
+| | `SafeAutoConfirmProfileTests.cs` | Verifies round-trip profile serialization and legacy schema compatibility |
+| | `WindowCaptureIntegrationTests.cs` | Validates GDI capture against real `TestTarget` |
 | | `MacroIntegrationTests.cs` | End-to-end macro execution and `WaitColor` verification |
 | | `ResourceSoakTests.cs` | 5,000-iteration leak tests verifying zero GDI and USER handle leaks |
 | | `TargetRestartIntegrationTests.cs`| Verifies profile reload and HWND re-resolution across process restarts |
+| | `RealWorldTerminalDetectionDiagnosticTests.cs` | Opt-in live Windows Terminal diagnostics (`BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=1`) |
 
 ---
 
@@ -527,13 +692,17 @@ sequenceDiagram
 When explaining or diagnosing targeting behavior, keep these platform realities in mind:
 
 1. **Standard Win32 / WinForms**:
-   - **Full Support**: Native buttons, text boxes, and panels have distinct HWNDs. `PostMessage` clicks and `PrintWindow` captures work reliably in the background.
+   - **Full Support**: Native buttons, text boxes, and panels have distinct HWNDs. `PostMessage` clicks, key presses, and `PrintWindow` captures work reliably in the background.
 2. **Chromium / Electron / Modern Web Apps (Chrome, Edge, VS Code, Discord)**:
    - **Single Surface HWND**: These applications host their entire client area inside a single top-level HWND (e.g. `Chrome_RenderWidgetHostHWND`). Internal buttons do not have individual HWNDs.
    - Targeting must bind to the root/render HWND, and coordinates are relative to that entire surface.
-3. **Hardware-Polled Applications & DirectInput Games**:
+3. **Windows Terminal & ConPTY Surfaces**:
+   - Background `PostMessage(WM_KEYDOWN/WM_KEYUP)` is ignored by Windows Terminal / ConPTY virtual terminal input pipelines.
+   - Text is read accurately in the background via Windows UI Automation `TextPattern.GetVisibleRanges()`.
+   - Input delivery requires the hardened `ForegroundPulse` strategy (`SendInput` after verifying active foreground HWND), restoring previous focus immediately.
+4. **Hardware-Polled Applications & DirectInput Games**:
    - Games utilizing DirectInput, Raw Input, or exclusive-mode DirectX/Vulkan surfaces bypass the Windows message queue entirely and read directly from USB hardware drivers. Window-level `PostMessage` calls will be ignored by these targets.
-4. **UIPI (User Interface Privilege Isolation)**:
+5. **UIPI (User Interface Privilege Isolation)**:
    - If the target application is running as Administrator, BackgroundAutomator must also be run as Administrator; otherwise, Windows kernel will drop the click messages.
 
 ---
@@ -545,13 +714,23 @@ When explaining or diagnosing targeting behavior, keep these platform realities 
 dotnet build BackgroundAutomator.sln
 ```
 
-### Run Full Test Suite (140 tests)
+### Run Full Test Suite (246 tests, Headless & CI Friendly)
 ```powershell
 dotnet test BackgroundAutomator.sln
 ```
 
+### Run Opt-In Interactive Real-World Terminal Diagnostics
+```powershell
+$env:BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS="1"
+dotnet test BackgroundAutomator.sln --filter "FullyQualifiedName~RealWorld"
+$env:BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=""
+```
+
 ### Run Targeted Test Fixtures
 ```powershell
+# Safe Auto-Confirm and Command Approval tests
+dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~SafeAutoConfirm"
+
 # GDI and USER handle leak soak tests (5,000 iterations)
 dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj --filter "FullyQualifiedName~ResourceSoakTests"
 

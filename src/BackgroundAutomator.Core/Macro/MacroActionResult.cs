@@ -34,5 +34,11 @@ public sealed record MacroActionResult(MacroActionStatus Status, string? Message
     public static MacroActionResult InvalidConfiguration(string message = "Invalid action configuration parameters.") =>
         new(MacroActionStatus.InvalidConfiguration, message);
 
+    public static MacroActionResult ApprovalBlocked(string message = "Command approval was blocked by rule.") =>
+        new(MacroActionStatus.ApprovalBlocked, message);
+
+    public static MacroActionResult ApprovalFailed(string message = "Command approval failed.") =>
+        new(MacroActionStatus.ApprovalFailed, message);
+
     public static implicit operator MacroActionResult(MacroActionStatus status) => new(status);
 }

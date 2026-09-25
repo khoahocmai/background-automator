@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using System.Runtime.InteropServices;
 
 namespace BackgroundAutomator.Win32;
@@ -80,3 +80,61 @@ public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 /// Callback delegate for EnumChildWindows.
 /// </summary>
 public delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
+
+/// <summary>
+/// Win32 KEYBDINPUT structure for keyboard SendInput.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct KEYBDINPUT
+{
+    public ushort wVk;
+    public ushort wScan;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+}
+
+/// <summary>
+/// Win32 MOUSEINPUT structure for mouse SendInput.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct MOUSEINPUT
+{
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+}
+
+/// <summary>
+/// Win32 HARDWAREINPUT structure.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct HARDWAREINPUT
+{
+    public uint uMsg;
+    public ushort wParamL;
+    public ushort wParamH;
+}
+
+/// <summary>
+/// Win32 INPUT structure for SendInput. 64-bit explicit layout.
+/// </summary>
+[StructLayout(LayoutKind.Explicit)]
+public struct INPUT
+{
+    [FieldOffset(0)]
+    public uint type;
+
+    [FieldOffset(8)]
+    public KEYBDINPUT ki;
+
+    [FieldOffset(8)]
+    public MOUSEINPUT mi;
+
+    [FieldOffset(8)]
+    public HARDWAREINPUT hi;
+}
+

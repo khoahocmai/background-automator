@@ -782,16 +782,16 @@ wrong application
 # 20. Acceptance Criteria — PressKey Commit
 
 ```text
-[ ] PressKeyAction exists
-[ ] Enter works in TestTarget
-[ ] WM_KEYDOWN is correct
-[ ] WM_KEYUP is correct
-[ ] Tab/Escape/Space/arrow keys supported
-[ ] Macro UI supports Press Key
-[ ] Profiles persist Press Key
-[ ] Existing click/macro behavior unchanged
-[ ] Build passes
-[ ] Full tests pass
+[x] PressKeyAction exists
+[x] Enter works in TestTarget
+[x] WM_KEYDOWN is correct
+[x] WM_KEYUP is correct
+[x] Tab/Escape/Space/arrow keys supported
+[x] Macro UI supports Press Key
+[x] Profiles persist Press Key
+[x] Existing click/macro behavior unchanged
+[x] Build passes
+[x] Full tests pass
 ```
 
 ---
@@ -799,23 +799,44 @@ wrong application
 # 21. Acceptance Criteria — Prompt Detection Commit
 
 ```text
-[ ] Feasibility tested against actual IDE/CLI
-[ ] One reliable detection backend selected
-[ ] WaitForText-style condition implemented
-[ ] Configurable expected text
-[ ] Timeout implemented
-[ ] Poll interval implemented
-[ ] Negative/non-match case does nothing
-[ ] Auto-confirm requires explicit configured rule
-[ ] Optional command allowlist supported before unattended approval
-[ ] PressKey Enter runs only after successful match
-[ ] Diagnostic log explains match / timeout / blocked approval
-[ ] Full tests pass
+[x] Feasibility tested against actual IDE/CLI (UI Automation TextPattern on TermControl)
+[x] One reliable detection backend selected (Windows UI Automation COM accessibility)
+[x] WaitForText-style condition implemented (WaitForTextAction)
+[x] Configurable expected text
+[x] Timeout implemented
+[x] Poll interval implemented
+[x] Negative/non-match case does nothing
+[x] Auto-confirm requires explicit configured rule
+[x] Optional command allowlist supported before unattended approval
+[x] PressKey Enter runs only after successful match
+[x] Diagnostic log explains match / timeout / blocked approval
+[x] Full tests pass
 ```
 
 ---
 
-# 22. Documentation
+# 22. Acceptance Criteria — Safe Auto-Confirm + Terminal Foreground Pulse (Phase 4)
+
+```text
+[x] VisibleViewportOnly enforced as authoritative (never silently falls back to DocumentRange)
+[x] CommandPromptParser reliably extracts command text from tool calls (● Bash, ● run_command, Command:, raw lines)
+[x] Selected option marker detection (> 1. Yes, run command)
+[x] CommandApprovalEvaluator enforces multi-condition allowlist (Process, WindowClass, Prompt, Option, Exact command)
+[x] Fail-closed design with explicit block reasons (TargetMismatch, PromptNotVisible, OptionNotSelected, CommandNotFound, CommandNotAllowed)
+[x] Observe-Only dry-run mode (logs WOULD APPROVE without sending keystrokes)
+[x] Double-validation runtime loop: Background check -> Activate root HWND -> Re-validate in foreground state
+[x] Immediate focus race guard (checks GetForegroundWindow() right before SendInput)
+[x] Minimized target detection (IsIconic -> TargetUnavailable)
+[x] Prompt disappearance acknowledgment wait (prevents duplicate Enter dispatch)
+[x] Always restores previous foreground window in finally block
+[x] Interactive diagnostic tests opt-in via BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=1
+[x] Solution build succeeds with 0 warnings, 0 errors
+[x] Full test suite (246 tests) passes in headless environment
+```
+
+---
+
+# 23. Documentation
 
 Update incrementally after each phase:
 

@@ -8,8 +8,9 @@ using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
 using BackgroundAutomator.Core.Keyboard;
 using BackgroundAutomator.Core.Logging;
-using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Targeting;
+using BackgroundAutomator.Core.Macro;
+using BackgroundAutomator.Core.Approval;
 using BackgroundAutomator.Core.TextDetection;
 
 namespace BackgroundAutomator.App.ViewModels;
@@ -85,6 +86,33 @@ public sealed partial class MacroViewModel : ObservableObject
 
     [ObservableProperty]
     private int _waitForTextTimeoutMs = 60000;
+
+    // Safe Auto Confirm configuration fields
+    public IReadOnlyList<AutoConfirmExecutionMode> AvailableExecutionModes { get; } = Enum.GetValues<AutoConfirmExecutionMode>();
+
+    [ObservableProperty]
+    private string _autoConfirmRuleName = "Approve BackgroundAutomator tests";
+
+    [ObservableProperty]
+    private string _autoConfirmProcess = "WindowsTerminal.exe";
+
+    [ObservableProperty]
+    private string _autoConfirmPrompt = "Run this command?";
+
+    [ObservableProperty]
+    private string _autoConfirmSelectedOption = "Yes, run command";
+
+    [ObservableProperty]
+    private string _autoConfirmAllowedCommand = "dotnet test BackgroundAutomator.sln";
+
+    [ObservableProperty]
+    private AutoConfirmExecutionMode _autoConfirmExecutionMode = AutoConfirmExecutionMode.ObserveOnly;
+
+    [ObservableProperty]
+    private int _autoConfirmPollIntervalMs = 500;
+
+    [ObservableProperty]
+    private int _autoConfirmTimeoutMs = 60000;
 
     public MacroViewModel(
         MacroRunner macroRunner,
@@ -282,6 +310,44 @@ public sealed partial class MacroViewModel : ObservableObject
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro WaitForText: \"{WaitForTextExpected}\" ({WaitForTextMatchMode}, timeout={WaitForTextTimeoutMs}ms, poll={WaitForTextPollIntervalMs}ms)");
+    }
+
+    [RelayCommand]
+    public void AddSafeAutoConfirmAction()
+    {
+        if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
+        {
+            MessageBox.Show("Please enter the exact allowed command to auto-confirm.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(AutoConfirmPrompt))
+        {
+            MessageBox.Show("Please enter the expected prompt text.", "Invalid Prompt", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var rule = new CommandApprovalRule
+        {
+            Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
+            ExpectedProcess = AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+            ExpectedPrompt = AutoConfirmPrompt.Trim(),
+            ExpectedSelectedOption = AutoConfirmSelectedOption?.Trim() ?? "Yes, run command",
+            AllowedCommand = AutoConfirmAllowedCommand.Trim(),
+            CommandMatchMode = CommandMatchMode.Exact,
+            Enabled = true
+        };
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode,
+            deliveryMode: KeyDeliveryMode.ForegroundPulse,
+            timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
+            pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs));
+
+        Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        StatusText = $"State: IDLE | Actions: {Actions.Count}";
+        _logger.Info($"Added Macro SafeAutoConfirm: \"{rule.Name}\" [{AutoConfirmExecutionMode}] Command: \"{rule.AllowedCommand}\"");
     }
 
     [RelayCommand]

@@ -120,6 +120,51 @@
                                    Command="{Binding AddWaitForTextActionCommand}" />
                     </StackPanel>
                 </TabItem>
+
+                <!-- Safe Auto Confirm Tab -->
+                <TabItem Header="Safe Auto Confirm">
+                    <StackPanel Orientation="Vertical" Margin="8,10,8,8">
+                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="Rule Name:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="{Binding AutoConfirmRuleName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="180" Margin="0,0,12,0" />
+
+                            <TextBlock Text="Process:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="{Binding AutoConfirmProcess, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="0,0,12,0" />
+
+                            <TextBlock Text="Prompt:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="{Binding AutoConfirmPrompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="0,0,12,0" />
+
+                            <TextBlock Text="Selected option:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="{Binding AutoConfirmSelectedOption, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="140" Margin="0,0,12,0" />
+                        </WrapPanel>
+
+                        <WrapPanel Orientation="Horizontal">
+                            <TextBlock Text="Allowed command:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="{Binding AutoConfirmAllowedCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="240" Margin="0,0,12,0" />
+
+                            <TextBlock Text="Match:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:TextBox Text="Exact" IsReadOnly="True" Width="70" Margin="0,0,12,0" />
+
+                            <TextBlock Text="Mode:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ComboBox ItemsSource="{Binding AvailableExecutionModes}"
+                                      SelectedItem="{Binding AutoConfirmExecutionMode, Mode=TwoWay}"
+                                      Width="115"
+                                      Margin="0,0,12,0" />
+
+                            <TextBlock Text="Poll:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="75" Margin="0,0,4,0" />
+                            <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                            <TextBlock Text="Timeout:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                            <ui:NumberBox Value="{Binding AutoConfirmTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="85" Margin="0,0,4,0" />
+                            <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                            <ui:Button Content="+ Add AutoConfirm"
+                                       Appearance="Primary"
+                                       Command="{Binding AddSafeAutoConfirmActionCommand}" />
+                        </WrapPanel>
+                    </StackPanel>
+                </TabItem>
             </TabControl>
         </ui:CardExpander>
 

@@ -16,6 +16,12 @@ Phase 3 delivered a composable macro action engine, background window client-are
 Phase 4 hardens the entire system: off-UI-thread capture execution, hung-target detection, single-flight capture throttling, durable target descriptors and re-resolution (no live HWNDs persisted), atomic JSON profile persistence, UIPI elevation diagnostics, multi-monitor negative coordinate support, and portable self-contained release builds.
 
 ### Key Capabilities in Phase 4
+* **Safe Terminal Auto-Confirm**: Automated, unattended approval of explicit CLI/agent confirmation prompts (e.g. `Run this command? > 1. Yes, run command`). Requires explicit allowlist rules; fail-closed by default (no wildcards).
+* **Terminal Foreground Input Delivery**:
+  * `BackgroundPostMessage`: True non-intrusive background input (`WM_KEYDOWN`/`WM_KEYUP`) for compatible Win32/WinForms controls without taking focus.
+  * `ForegroundPulse`: Controlled, momentary foreground activation via `SetForegroundWindow` and `SendInput(Enter)` for modern terminal surfaces (Windows Terminal / ConPTY), immediately followed by revalidation and previous foreground window restoration.
+* **Double Revalidation & Anti-Race Guards**: Verifies target existence, visibility, non-minimized state, prompt visibility, option selection, and allowed command twice—before and after foreground activation. Re-checks foreground ownership immediately prior to `SendInput` and guards against duplicate Enter inputs.
+* **Authoritative Visible Viewport Detection**: UI Automation inspections strictly prioritize `TextPattern.GetVisibleRanges()` (`TextDetectionScope.VisibleViewportOnly`) to prevent false matches against scrolled-away terminal history.
 * **Window Capture Hardening**: Background client-area captures execute asynchronously on the thread pool with `CaptureClientAreaAsync`, guarded by `IsHungAppWindow` and a controlled single-flight gate (`SemaphoreSlim(1,1)`).
 * **Durable Target Descriptors & Re-resolution**: Profiles store persistent descriptors (ProcessName, WindowTitle, WindowClass, MatchMode, ChildDescriptor) rather than ephemeral live HWNDs, re-resolving fresh handles across app restarts with ambiguity detection.
 * **Atomic Profile Persistence**: Profiles are saved atomically via temporary file writes and replacements in `%LOCALAPPDATA%\BackgroundAutomator\profiles\`. Damaged profiles are isolated without impacting enumeration.

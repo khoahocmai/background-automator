@@ -25,6 +25,18 @@ public static class NativeConstants
     public const uint WM_SYSKEYDOWN = 0x0104;
     public const uint WM_SYSKEYUP = 0x0105;
 
+    // SendInput Types
+    public const uint INPUT_MOUSE = 0;
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint INPUT_HARDWARE = 2;
+
+    // SendInput Keyboard Flags
+    public const uint KEYEVENTF_KEYDOWN = 0x0000;
+    public const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
+    public const uint KEYEVENTF_SCANCODE = 0x0008;
+
     // Mouse Messages
     public const uint WM_MOUSEMOVE = 0x0200;
     public const uint WM_LBUTTONDOWN = 0x0201;

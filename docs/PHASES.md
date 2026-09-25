@@ -173,6 +173,61 @@ To guarantee system stability and responsiveness, BackgroundAutomator implements
 
 ---
 
+## Phase 5 — Background Key Press Macro Action
+
+Status: COMPLETE (Commit `66605c2`)
+
+Scope:
+- `BackgroundKey` enum (`Enter`, `Tab`, `Escape`, `Space`, `ArrowUp`, `ArrowDown`, `ArrowLeft`, `ArrowRight`)
+- `KeyboardMessageHelper` virtual key mapping and 32-bit `lParam` bit packing for `WM_KEYDOWN` and `WM_KEYUP`
+- `PressKeyAction` macro action executing background keystrokes via unmanaged `PostMessage`
+- `IBackgroundKeyboard` and `BackgroundKeyboardEngine` abstractions
+- Macro UI and Profile JSON serialization (`actionType: "PressKey"`)
+- Verified against `TestTarget` raw Windows message logger
+
+---
+
+## Phase 6 — Prompt Text Detection via UI Automation
+
+Status: COMPLETE (Commit `89b98e9`)
+
+Scope:
+- Evaluation of detection backends: Windows UI Automation (UIA) COM accessibility chosen over OCR for high reliability and zero OCR hallucinations on terminal controls (`TermControl`).
+- `IUiAutomationTextDetectionService` and `UiAutomationTextDetectionService` using `TextPattern`.
+- `WaitForTextAction` polling visible window text with configurable match mode (`Contains`, `Exact`), polling intervals, and timeouts.
+- Macro page UI integration and profile persistence.
+
+---
+
+## Phase 7 (Prompt Phase 4) — Safe Auto-Confirm + Terminal Foreground Input
+
+Status: COMPLETE
+
+Scope:
+- **Phase 3 Hardening & Safety Invariants**:
+  - `TextDetectionScope.VisibleViewportOnly`: Enforced visible viewport authority via `TextPattern.GetVisibleRanges()`. Never silently falls back to document history for approval automation.
+  - Raw visible text preservation (`RawText` alongside normalized `ObservedText`).
+  - Gated all real-world desktop/terminal tests behind `BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=1`. Default `dotnet test` suite runs 100% headless with zero live desktop dependencies.
+- **Command Prompt Parsing (`ICommandPromptParser`)**:
+  - Real-world Cascadia terminal buffer unwrapping for CLI/agent tools (`● Bash(...)`, `run_command(...)`, `Command: ...`, raw lines).
+  - Selected option detection (`> 1. Yes, run command`).
+  - `CommandPromptSnapshot` runtime model.
+- **Strict Allowlist Rule Evaluator (`CommandApprovalEvaluator`)**:
+  - Multi-condition verification: Process + WindowClass + Prompt + SelectedOption + Exact Allowlisted Command (`CommandMatchMode.Exact`).
+  - Fail-closed design: Returns explicit block reasons (`CommandNotAllowed`, `OptionNotSelected`, `TargetMismatch`, etc.).
+  - `AutoConfirmExecutionMode`: `ObserveOnly` (dry-run, logs `WOULD APPROVE`) and `Confirm` (live execution).
+- **Foreground Pulse Delivery (`IForegroundKeyboard`, `IWindowForegroundService`)**:
+  - Encapsulated Win32 `SendInput` (`SendInputHelper`) and `SetForegroundWindow`/`GetForegroundWindow`/`IsIconic`.
+  - Target minimized check (`IsIconic`) failing closed.
+  - Double-validation loop: initial background evaluation -> activate target root window -> verify foreground -> re-read UIA visible viewport -> re-parse and re-evaluate -> verify foreground immediately before `SendInput` (focus race guard) -> dispatch Enter -> poll prompt disappearance (duplicate protection) -> restore previous foreground window in `finally` block.
+- **Presentation & Persistence**:
+  - Macro page UI tab for Safe Auto-Confirm with rule editor and mode toggle (`ObserveOnly` vs `Confirm`).
+  - Backward-compatible profile JSON persistence with atomic storage.
+- **Test Coverage**:
+  - 246 total automated tests (0 failures, 0 skipped). Includes 34 new unit and mock integration tests covering all parsing variants, rule evaluator block reasons, focus races, revalidation failures, timeouts, duplicate prevention, and profile serialization.
+
+---
+
 ## Backlog / Optional Enhancements
 
 The following features were identified during development but intentionally omitted from the core MVP to maintain stability and simplicity:

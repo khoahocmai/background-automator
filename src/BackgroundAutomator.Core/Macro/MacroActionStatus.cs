@@ -13,5 +13,7 @@ public enum MacroActionStatus
     ClickFailed,
     KeyPressFailed,
     TextDetectionFailed,
-    InvalidConfiguration
+    InvalidConfiguration,
+    ApprovalBlocked,
+    ApprovalFailed
 }
