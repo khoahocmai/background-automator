@@ -49,19 +49,27 @@ public sealed partial class MainViewModel : ObservableObject
 
     public Type? CurrentActivePageType { get; set; }
 
-    public MainViewModel()
+    public MainViewModel() : this(null, null, null, null)
     {
-        _logger = new InMemoryLogger(maxEntries: 500);
+    }
+
+    public MainViewModel(
+        IAppLogger? logger = null,
+        ProfileStorageService? profileStorage = null,
+        WindowTargetService? targetService = null,
+        TargetResolver? targetResolver = null)
+    {
+        _logger = logger ?? new InMemoryLogger(maxEntries: 500);
         _coordinateService = new CoordinateService(_logger);
-        _targetService = new WindowTargetService(_coordinateService, _logger);
+        _targetService = targetService ?? new WindowTargetService(_coordinateService, _logger);
         _clicker = new BackgroundClickerEngine(_logger);
         _keyboard = new BackgroundKeyboardEngine(_logger);
         _runner = new ClickRunner(_clicker, _logger);
         _captureService = new GdiWindowCaptureService(_logger);
         _macroRunner = new MacroRunner(_logger);
         _elevationService = new ProcessElevationService(_logger);
-        _targetResolver = new TargetResolver(_targetService, _coordinateService, _logger);
-        _profileStorage = new ProfileStorageService(logger: _logger);
+        _targetResolver = targetResolver ?? new TargetResolver(_targetService, _coordinateService, _logger);
+        _profileStorage = profileStorage ?? new ProfileStorageService(logger: _logger);
 
         TargetVM = new TargetViewModel(
             _targetService,
@@ -144,18 +152,14 @@ public sealed partial class MainViewModel : ObservableObject
         CurrentTarget = target;
         if (target != null)
         {
-            if (TargetVM.CurrentTarget != target)
-            {
-                TargetVM.CommitTarget(target);
-            }
             StatusTargetText = $"Target: {target.ProcessName} ({HwndFormatter.FormatShort(target.TargetHwnd)})";
         }
         else
         {
-            TargetVM.ClearTarget();
             StatusTargetText = "Target: None";
         }
 
+        TargetVM.SetCurrentTarget(target);
         SimpleVM.SetCurrentTarget(target);
         MacroVM.SetCurrentTarget(target);
         ProfilesVM.SetCurrentTarget(target);

@@ -225,27 +225,46 @@ public sealed partial class TargetViewModel : ObservableObject
         if (CurrentTarget == target)
             return;
 
-        CurrentTarget = target;
-        DisplayTargetInfo(target, "Target valid", "#107C10");
+        SetCurrentTarget(target);
         _onTargetCommitted(target);
+    }
 
-        // Sync dropdown selection if present
-        for (int i = 0; i < AvailableWindows.Count; i++)
+    public void SetCurrentTarget(WindowTarget? target)
+    {
+        if (target != null)
         {
-            if (AvailableWindows[i].Hwnd == target.RootHwnd)
+            if (CurrentTarget == target)
+                return;
+
+            CurrentTarget = target;
+            DisplayTargetInfo(target, "Target valid", "#107C10");
+
+            // Sync dropdown selection if present
+            for (int i = 0; i < AvailableWindows.Count; i++)
             {
-                if (SelectedCandidate != AvailableWindows[i])
+                if (AvailableWindows[i].Hwnd == target.RootHwnd)
                 {
-                    SelectedCandidate = AvailableWindows[i];
+                    if (SelectedCandidate != AvailableWindows[i])
+                    {
+                        SelectedCandidate = AvailableWindows[i];
+                    }
+                    break;
                 }
-                break;
             }
+        }
+        else
+        {
+            if (CurrentTarget == null && !IsTargetActive)
+                return;
+
+            ClearTargetDisplay("No target selected", "#666666");
         }
     }
 
-    public void ClearTarget(string status = "No target selected", string color = "#666666")
+    public void ClearTargetDisplay(string status = "No target selected", string color = "#666666")
     {
         CurrentTarget = null;
+        _candidateTarget = null;
         IsTargetActive = false;
         SelectedCandidate = null;
         ProcessName = "-";
@@ -261,6 +280,7 @@ public sealed partial class TargetViewModel : ObservableObject
         TargetStatus = status;
         TargetStatusColor = color;
         ElevationText = "-";
+        ElevationTextColor = "#333333";
         HasUipiMismatch = false;
         CanRestartAdmin = false;
     }
@@ -312,30 +332,10 @@ public sealed partial class TargetViewModel : ObservableObject
     [RelayCommand]
     public void ClearTarget()
     {
-        CurrentTarget = null;
-        _candidateTarget = null;
-        IsTargetActive = false;
+        if (CurrentTarget == null && !IsTargetActive)
+            return;
 
-        ProcessName = "-";
-        WindowTitle = "-";
-        PidText = "-";
-        ThreadIdText = "-";
-        RootHwndText = "-";
-        TargetHwndText = "-";
-        ParentHwndText = "-";
-        WindowClassText = "-";
-        ScreenCoordsText = "X: - | Y: -";
-        ClientCoordsText = "X: - | Y: -";
-
-        ElevationText = "-";
-        ElevationTextColor = "#333333";
-        HasUipiMismatch = false;
-        CanRestartAdmin = false;
-
-        TargetStatus = "Target cleared";
-        TargetStatusColor = "#666666";
-
-        SelectedCandidate = null;
+        ClearTargetDisplay("Target cleared", "#666666");
         _onTargetCommitted(null);
         _logger.Info("Target cleared by user");
     }
