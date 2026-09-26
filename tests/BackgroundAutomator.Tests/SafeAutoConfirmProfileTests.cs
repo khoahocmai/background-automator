@@ -275,4 +275,48 @@ public class SafeAutoConfirmProfileTests : IDisposable
         Assert.Equal("MyStartupProfile", prefs.StartupProfileName);
         Assert.Equal("MyLastProfile", prefs.LastUsedProfileName);
     }
+
+    [Theory]
+    [InlineData(FocusBehavior.FastPulse)]
+    [InlineData(FocusBehavior.KeepTargetForeground)]
+    public void MacroActionConfig_RoundTrips_FocusBehavior(FocusBehavior behavior)
+    {
+        var rule = new CommandApprovalRule
+        {
+            Name = "Approve tests",
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command",
+            AllowedCommand = "dotnet test BackgroundAutomator.sln"
+        };
+
+        var originalAction = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            focusBehavior: behavior);
+
+        var config = MacroActionConfig.FromMacroAction(originalAction);
+        Assert.Equal(behavior.ToString(), config.FocusBehavior);
+
+        var restoredAction = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(behavior, restoredAction.FocusBehavior);
+    }
+
+    [Fact]
+    public void Legacy_SafeAutoConfirm_Without_FocusBehavior_Defaults_To_FastPulse()
+    {
+        string legacyJson = @"{
+  ""actionType"": ""SafeAutoConfirm"",
+  ""ruleName"": ""Legacy Rule"",
+  ""expectedProcess"": ""WindowsTerminal.exe"",
+  ""allowedCommand"": ""Get-Date""
+}";
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<MacroActionConfig>(legacyJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(config);
+        Assert.Null(config.FocusBehavior);
+
+        var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(FocusBehavior.FastPulse, action.FocusBehavior);
+    }
 }

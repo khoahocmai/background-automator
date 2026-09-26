@@ -36,6 +36,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
     public AutoConfirmExecutionMode ExecutionMode { get; }
     public KeyDeliveryMode DeliveryMode { get; }
     public AutoConfirmWaitMode WaitMode { get; }
+    public FocusBehavior FocusBehavior { get; }
     public TimeSpan Timeout { get; }
     public TimeSpan PollInterval { get; }
     public IntPtr OverrideHwnd { get; }
@@ -47,11 +48,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         get
         {
             string waitDisplay = WaitMode == AutoConfirmWaitMode.Indefinite ? "Indefinite" : $"Timeout: {Timeout.TotalSeconds:F0}s";
+            string focusDisplay = FocusBehavior == FocusBehavior.KeepTargetForeground ? " [KeepFG]" : string.Empty;
             if (RuleSet.Rules.Count == 1)
             {
-                return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay})";
+                return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay}){focusDisplay}";
             }
-            return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules.Count} rules ({waitDisplay})";
+            return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules.Count} rules ({waitDisplay}){focusDisplay}";
         }
     }
 
@@ -62,7 +64,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
         IntPtr overrideHwnd = default,
-        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout)
+        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
+        FocusBehavior focusBehavior = FocusBehavior.FastPulse)
     {
         RuleSet = ruleSet ?? throw new ArgumentNullException(nameof(ruleSet));
         ExecutionMode = executionMode;
@@ -71,6 +74,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         PollInterval = pollInterval ?? DefaultPollInterval;
         OverrideHwnd = overrideHwnd;
         WaitMode = waitMode;
+        FocusBehavior = focusBehavior;
     }
 
     public SafeAutoConfirmAction(
@@ -80,7 +84,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
         IntPtr overrideHwnd = default,
-        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout)
+        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
+        FocusBehavior focusBehavior = FocusBehavior.FastPulse)
         : this(
             ApprovalRuleSet.FromSingleRule(rule ?? throw new ArgumentNullException(nameof(rule))),
             executionMode,
@@ -88,7 +93,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             timeout,
             pollInterval,
             overrideHwnd,
-            waitMode)
+            waitMode,
+            focusBehavior)
     {
     }
 
@@ -310,9 +316,17 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         }
 
         IntPtr previousForeground = context.ForegroundService.GetForegroundWindow();
-        context.Logger?.Info($"[AutoConfirm] previous foreground = 0x{previousForeground.ToInt64():X8}");
+        bool isAlreadyForeground = (previousForeground == effectiveRoot || previousForeground == targetHwnd);
+        context.Logger?.Info($"[AutoConfirm] previous foreground = 0x{previousForeground.ToInt64():X8}{(isAlreadyForeground ? " (target is already foreground)" : string.Empty)}");
 
-        try
+        var pulseSw = Stopwatch.StartNew();
+        long activationConfirmedAtMs = 0;
+        long enterSentAtMs = 0;
+        long previousRestoredAtMs = 0;
+        bool foregroundRestored = false;
+        bool wasActivated = false;
+
+        if (!isAlreadyForeground)
         {
             // Step 1: Request foreground activation of the terminal root window
             bool activated = context.ForegroundService.ActivateWindow(effectiveRoot);
@@ -321,6 +335,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 context.Logger?.Warning("[AutoConfirm] Failed to activate terminal window. ForegroundActivationFailed.");
                 return MacroActionResult.ApprovalBlocked("Failed to request foreground activation of target terminal. ForegroundActivationFailed.");
             }
+            wasActivated = true;
 
             // Step 2: Poll briefly until target/root window is confirmed as foreground
             bool confirmedForeground = false;
@@ -342,8 +357,17 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Terminal window failed to gain foreground focus. ForegroundActivationFailed.");
             }
 
-            context.Logger?.Info("[AutoConfirm] terminal foreground confirmed");
+            activationConfirmedAtMs = pulseSw.ElapsedMilliseconds;
+            context.Logger?.Info($"[AutoConfirm] terminal foreground confirmed (+{activationConfirmedAtMs}ms)");
+        }
+        else
+        {
+            activationConfirmedAtMs = pulseSw.ElapsedMilliseconds;
+            context.Logger?.Info($"[AutoConfirm] terminal already foreground (+{activationConfirmedAtMs}ms)");
+        }
 
+        try
+        {
             // Step 3: CRITICAL REVALIDATION
             // Re-read visible viewport
             var revalDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
@@ -422,9 +446,53 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 context.Keyboard.PressKey(targetHwnd, BackgroundKey.Enter);
             }
 
-            context.Logger?.Info("[AutoConfirm] Enter sent");
+            enterSentAtMs = pulseSw.ElapsedMilliseconds;
+            context.Logger?.Info($"[AutoConfirm] Enter sent (+{enterSentAtMs}ms)");
 
-            // Step 6: Wait for prompt acknowledgement based on prompt fingerprint
+            // FastPulse optimization: Restore previous foreground IMMEDIATELY after Enter!
+            if (FocusBehavior == FocusBehavior.FastPulse &&
+                !isAlreadyForeground &&
+                previousForeground != IntPtr.Zero &&
+                previousForeground != targetHwnd &&
+                previousForeground != effectiveRoot)
+            {
+                if (context.ForegroundService.IsWindow(previousForeground))
+                {
+                    try
+                    {
+                        bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
+                        previousRestoredAtMs = pulseSw.ElapsedMilliseconds;
+                        foregroundRestored = true;
+                        if (restored)
+                        {
+                            long pulseDurationMs = previousRestoredAtMs;
+                            context.Logger?.Info($"[AutoConfirm] ForegroundPulse: activation confirmed at +{activationConfirmedAtMs}ms, Enter sent at +{enterSentAtMs}ms, previous foreground restored at +{previousRestoredAtMs}ms, pulse duration = {pulseDurationMs}ms");
+                        }
+                        else
+                        {
+                            context.Logger?.Warning("[AutoConfirm] Previous foreground window could not be restored by OS. (Command approval was already processed).");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        context.Logger?.Warning($"[AutoConfirm] Foreground restore exception: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    context.Logger?.Info("[AutoConfirm] Previous foreground window was closed during execution; skipping restoration.");
+                }
+            }
+            else if (isAlreadyForeground)
+            {
+                context.Logger?.Info($"[AutoConfirm] ForegroundPulse (target already foreground): Enter sent at +{enterSentAtMs}ms (no focus switch).");
+            }
+            else if (FocusBehavior == FocusBehavior.KeepTargetForeground)
+            {
+                context.Logger?.Info($"[AutoConfirm] ForegroundPulse (KeepTargetForeground): activation confirmed at +{activationConfirmedAtMs}ms, Enter sent at +{enterSentAtMs}ms, target kept foreground.");
+            }
+
+            // Step 6: Wait for prompt acknowledgement based on prompt fingerprint (performed while terminal is background again)
             var ackSw = Stopwatch.StartNew();
             bool promptAcknowledged = false;
             string initialCmd = revalSnapshot.CommandText ?? string.Empty;
@@ -432,7 +500,15 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             while (ackSw.ElapsedMilliseconds < 2000)
             {
-                await Task.Delay(50, ct).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(50, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return MacroActionResult.Cancelled();
+                }
+
                 var ackDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
                 if (!ackDetect.Matched)
                 {
@@ -468,8 +544,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         }
         finally
         {
-            // Step 7: Restore previous foreground window safely
-            if (previousForeground != IntPtr.Zero &&
+            // Restore previous foreground window if activation occurred and restoration was not already completed
+            if (wasActivated &&
+                !isAlreadyForeground &&
+                !foregroundRestored &&
+                FocusBehavior == FocusBehavior.FastPulse &&
+                previousForeground != IntPtr.Zero &&
                 previousForeground != targetHwnd &&
                 previousForeground != effectiveRoot)
             {
@@ -480,21 +560,13 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                         bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
                         if (restored)
                         {
-                            context.Logger?.Info("[AutoConfirm] previous foreground restored");
-                        }
-                        else
-                        {
-                            context.Logger?.Warning("[AutoConfirm] Previous foreground window could not be restored by OS. (Command approval was already processed).");
+                            context.Logger?.Info("[AutoConfirm] previous foreground restored in cleanup");
                         }
                     }
                     catch (Exception ex)
                     {
-                        context.Logger?.Warning($"[AutoConfirm] Foreground restore exception: {ex.Message}");
+                        context.Logger?.Warning($"[AutoConfirm] Foreground restore exception in cleanup: {ex.Message}");
                     }
-                }
-                else
-                {
-                    context.Logger?.Info("[AutoConfirm] Previous foreground window was closed during execution; skipping restoration.");
                 }
             }
         }

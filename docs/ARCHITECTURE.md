@@ -429,8 +429,8 @@ Combines UIA detection, prompt parsing, rule evaluation, and a verified foregrou
 2. **Foreground Transition Phase**:
    - Checks if target window is minimized (`IsIconic`). If minimized, aborts with `TargetUnavailable`.
    - Records currently focused window (`previousForeground = GetForegroundWindow()`).
-   - Requests foreground activation for the target root window (`SetForegroundWindow`).
-   - Polls until target is confirmed active foreground window (with timeout).
+   - **Already-Foreground Optimization**: If `previousForeground == targetRootHwnd`, skips activation and restoration entirely, avoiding artificial focus transitions.
+   - Otherwise, requests foreground activation for the target root window (`SetForegroundWindow`) and polls until target is confirmed active foreground window (with timeout).
 3. **Revalidation & Keystroke Phase**:
    - Re-queries root HWND, process identity, and window class to detect target swaps or closure.
    - Re-checks UIPI elevation compatibility.
@@ -438,9 +438,14 @@ Combines UIA detection, prompt parsing, rule evaluation, and a verified foregrou
    - Re-parses prompt snapshot and re-evaluates rule.
    - **Focus Race Mitigation**: Win32 window focus is cooperative; the OS cannot provide a single atomic "test-focus-and-send-input" kernel primitive across processes. BackgroundAutomator minimizes this race window to near-zero by synchronously checking `GetForegroundWindow() == targetRootHwnd` directly before `SendInput` with **zero intervening awaits or thread context switches**. If focus was stolen by another window, it aborts immediately with `ApprovalFailed` without sending keystrokes.
    - Dispatches exactly one Enter key-down/key-up pair (`SendInput`). Never retries blindly on the same action invocation.
+4. **Immediate Restoration & Background Acknowledgement (`FastPulse`)**:
+   - **`FocusBehavior.FastPulse` (Default)**: Restores `previousForeground` immediately after `SendInput` (before prompt dismissal polling begins). UI Automation continues reading terminal text in the background to acknowledge prompt dismissal, minimizing visible screen pulse time down to milliseconds.
+   - **`FocusBehavior.KeepTargetForeground`**: Keeps target terminal window focused after dispatching Enter.
+   - Restoring focus failure does not mask a successful command approval (`EnterAccepted = true`).
+   - Logs timing diagnostics: `ForegroundPulse: activation confirmed at +Xms, Enter sent at +Yms, previous foreground restored at +Zms, pulse duration = Zms`.
    - **Fingerprint-Based Acknowledgment**: Polls (up to 2,000ms) for prompt disappearance using the specific prompt snapshot fingerprint (expected command text and selected option). If the initial prompt disappears or is superseded by a subsequent prompt, Prompt A is safely recognized as acknowledged without approving Prompt B.
-4. **Cleanup Phase (`finally`)**:
-   - Restores `previousForeground` window via `SetForegroundWindow` if `User32.IsWindow(previousForeground)` is still valid. If the previous window was closed during the pulse, the failure to restore focus does not mask a successful command approval.
+5. **Cleanup Phase (`finally`)**:
+   - Ensures previous foreground window is restored if an unexpected exception occurs after activation but before normal restoration.
 
 ---
 

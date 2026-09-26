@@ -19,6 +19,8 @@ public class SafeAutoConfirmActionTests
         public int ActivateCallCount { get; private set; }
         public int RestoreCallCount { get; private set; }
         public bool ShouldFailActivation { get; set; } = false;
+        public bool ShouldFailRestore { get; set; } = false;
+        public Action<string>? OnEvent { get; set; }
         public bool IsMinimized { get; set; } = false;
         public bool WindowClosed { get; set; } = false;
         public int ProcessId { get; set; } = 1234;
@@ -31,6 +33,7 @@ public class SafeAutoConfirmActionTests
         public bool ActivateWindow(IntPtr hWnd)
         {
             ActivateCallCount++;
+            OnEvent?.Invoke($"ActivateWindow:{hWnd}");
             if (ShouldFailActivation) return false;
             CurrentForeground = hWnd;
             return true;
@@ -39,7 +42,9 @@ public class SafeAutoConfirmActionTests
         public bool RestoreForegroundWindow(IntPtr hWnd)
         {
             RestoreCallCount++;
+            OnEvent?.Invoke($"RestoreForegroundWindow:{hWnd}");
             LastRestoredHwnd = hWnd;
+            if (ShouldFailRestore) return false;
             CurrentForeground = hWnd;
             return true;
         }
@@ -56,10 +61,12 @@ public class SafeAutoConfirmActionTests
     private class FakeForegroundKeyboard : IForegroundKeyboard
     {
         public int SendEnterCallCount { get; private set; }
+        public Action<string>? OnEvent { get; set; }
 
         public bool SendEnter()
         {
             SendEnterCallCount++;
+            OnEvent?.Invoke("SendEnter");
             return true;
         }
     }
@@ -887,5 +894,242 @@ Run this command?
 
         Assert.Equal(MacroActionStatus.Cancelled, result.Status);
         Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task FastPulse_Restores_Foreground_Immediately_Before_Acknowledgement_Polling()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var eventLog = new List<string>();
+
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            eventLog.Add($"DetectAsync:{detectCount}");
+            if (detectCount <= 2)
+            {
+                // Detection before and during initial re-validation
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            // Dismissed after Enter
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.OnEvent = ev => eventLog.Add(ev);
+        fgKb.OnEvent = ev => eventLog.Add(ev);
+
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            focusBehavior: FocusBehavior.FastPulse,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(1, fgService.ActivateCallCount);
+        Assert.Equal(1, fgService.RestoreCallCount);
+        Assert.Equal((IntPtr)0x9999, fgService.LastRestoredHwnd);
+
+        // Verify ordering: Activate -> SendEnter -> Restore -> Acknowledgement DetectAsync
+        int activateIdx = eventLog.FindIndex(e => e.StartsWith("ActivateWindow"));
+        int enterIdx = eventLog.FindIndex(e => e == "SendEnter");
+        int restoreIdx = eventLog.FindIndex(e => e.StartsWith("RestoreForegroundWindow"));
+        int ackDetectIdx = eventLog.FindIndex(e => e == "DetectAsync:3");
+
+        Assert.True(activateIdx >= 0, "ActivateWindow was not called");
+        Assert.True(enterIdx > activateIdx, "SendEnter must happen after ActivateWindow");
+        Assert.True(restoreIdx > enterIdx, "RestoreForegroundWindow must happen after SendEnter");
+        Assert.True(ackDetectIdx > restoreIdx, "Acknowledgement polling must happen after RestoreForegroundWindow in FastPulse");
+    }
+
+    [Fact]
+    public async Task KeepTargetForeground_DoesNotRestoreForeground()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var eventLog = new List<string>();
+
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            if (detectCount <= 2)
+            {
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.OnEvent = ev => eventLog.Add(ev);
+        fgKb.OnEvent = ev => eventLog.Add(ev);
+
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            focusBehavior: FocusBehavior.KeepTargetForeground,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(1, fgService.ActivateCallCount);
+        Assert.Equal(0, fgService.RestoreCallCount); // Did NOT restore!
+        Assert.Equal(targetHwnd, fgService.CurrentForeground);
+    }
+
+    [Fact]
+    public async Task AlreadyForeground_Skips_Activation_And_Restoration()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            if (detectCount <= 2)
+            {
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        fgService.CurrentForeground = targetHwnd; // Already foreground!
+
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            focusBehavior: FocusBehavior.FastPulse,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(0, fgService.ActivateCallCount); // Skipped activation
+        Assert.Equal(0, fgService.RestoreCallCount);  // Skipped restoration
+    }
+
+    [Fact]
+    public async Task RestoreForeground_Failure_DoesNotFail_Approval()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            if (detectCount <= 2)
+            {
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.ShouldFailRestore = true; // Simulating restore failure
+
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            focusBehavior: FocusBehavior.FastPulse,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        // Approval must STILL succeed because Enter was sent and prompt acknowledged!
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(1, fgService.RestoreCallCount);
+    }
+
+    [Fact]
+    public async Task PromptFingerprint_Mismatch_DuringPolling_CountsAsAcknowledged_AndDoesNotResendEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptA = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        string promptB = @"
+Requesting permission for:
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            if (detectCount <= 2)
+            {
+                // First prompt is Prompt A
+                return Task.FromResult(TextDetectionResult.Success(promptA, promptA));
+            }
+            // Next poll immediately returns Prompt B (different prompt has appeared)
+            return Task.FromResult(TextDetectionResult.Success(promptB, promptB));
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        // A is acknowledged, result is success
+        Assert.True(result.IsSuccess);
+        // Single approval invariant: exactly 1 Enter! B must NOT be approved
+        Assert.Equal(1, fgKb.SendEnterCallCount);
     }
 }

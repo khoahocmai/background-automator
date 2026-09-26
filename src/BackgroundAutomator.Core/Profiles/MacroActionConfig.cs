@@ -33,6 +33,7 @@ public sealed class MacroActionConfig
     public string? ExecutionMode { get; set; }
     public string? DeliveryMode { get; set; }
     public string? WaitMode { get; set; }
+    public string? FocusBehavior { get; set; }
 
     // SafeAutoConfirm multi-rule set property
     public ApprovalRuleSetConfig? RuleSet { get; set; }
@@ -94,6 +95,7 @@ public sealed class MacroActionConfig
                 ExecutionMode = saca.ExecutionMode.ToString(),
                 DeliveryMode = saca.DeliveryMode.ToString(),
                 WaitMode = saca.WaitMode.ToString(),
+                FocusBehavior = saca.FocusBehavior.ToString(),
                 TimeoutMs = (int)saca.Timeout.TotalMilliseconds,
                 PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds,
                 RuleSet = new ApprovalRuleSetConfig
@@ -192,7 +194,17 @@ public sealed class MacroActionConfig
             deliveryMode: ParseDeliveryMode(DeliveryMode),
             timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
             pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null,
-            waitMode: ParseWaitMode(WaitMode));
+            waitMode: ParseWaitMode(WaitMode),
+            focusBehavior: ParseFocusBehavior(FocusBehavior));
+    }
+
+    private static FocusBehavior ParseFocusBehavior(string? behavior)
+    {
+        if (Enum.TryParse<FocusBehavior>(behavior, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return Keyboard.FocusBehavior.FastPulse;
     }
 
     private static AutoConfirmWaitMode ParseWaitMode(string? waitMode)
