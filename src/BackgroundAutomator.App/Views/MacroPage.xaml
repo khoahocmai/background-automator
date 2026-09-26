@@ -16,7 +16,7 @@
         </Grid.RowDefinitions>
 
         <!-- Section 1: Configure & Add Macro Action -->
-        <ui:CardExpander Grid.Row="0" Header="+ Add Macro Action" IsExpanded="True" Margin="0,0,0,12">
+        <ui:CardExpander Grid.Row="0" Header="{Binding BuilderHeader}" IsExpanded="True" Margin="0,0,0,12">
             <TabControl SelectedIndex="{Binding SelectedActionCategoryIndex, Mode=TwoWay}" Margin="0,8,0,0">
                 <!-- Mouse Tab -->
                 <TabItem Header="Mouse">
@@ -34,11 +34,25 @@
                         <ui:Button Content="+ Click"
                                    Appearance="Primary"
                                    Command="{Binding AddClickActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}"
                                    Margin="0,0,8,0" />
 
                         <ui:Button Content="+ Double Click"
                                    Appearance="Primary"
-                                   Command="{Binding AddDoubleClickActionCommand}" />
+                                   Command="{Binding AddDoubleClickActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}" />
+
+                        <ui:Button Content="Save Changes"
+                                   Appearance="Primary"
+                                   FontWeight="SemiBold"
+                                   Command="{Binding SaveActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                   Margin="0,0,8,0" />
+
+                        <ui:Button Content="Cancel"
+                                   Appearance="Secondary"
+                                   Command="{Binding CancelActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </TabItem>
 
@@ -53,7 +67,20 @@
 
                         <ui:Button Content="+ Press Key"
                                    Appearance="Primary"
-                                   Command="{Binding AddPressKeyActionCommand}" />
+                                   Command="{Binding AddPressKeyActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}" />
+
+                        <ui:Button Content="Save Changes"
+                                   Appearance="Primary"
+                                   FontWeight="SemiBold"
+                                   Command="{Binding SaveActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                   Margin="0,0,8,0" />
+
+                        <ui:Button Content="Cancel"
+                                   Appearance="Secondary"
+                                   Command="{Binding CancelActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </TabItem>
 
@@ -66,7 +93,20 @@
 
                         <ui:Button Content="+ Add Delay"
                                    Appearance="Primary"
-                                   Command="{Binding AddDelayActionCommand}" />
+                                   Command="{Binding AddDelayActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}" />
+
+                        <ui:Button Content="Save Changes"
+                                   Appearance="Primary"
+                                   FontWeight="SemiBold"
+                                   Command="{Binding SaveActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                   Margin="0,0,8,0" />
+
+                        <ui:Button Content="Cancel"
+                                   Appearance="Secondary"
+                                   Command="{Binding CancelActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </TabItem>
 
@@ -91,7 +131,20 @@
 
                         <ui:Button Content="+ Add WaitColor"
                                    Appearance="Primary"
-                                   Command="{Binding AddWaitColorActionCommand}" />
+                                   Command="{Binding AddWaitColorActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}" />
+
+                        <ui:Button Content="Save Changes"
+                                   Appearance="Primary"
+                                   FontWeight="SemiBold"
+                                   Command="{Binding SaveActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                   Margin="0,0,8,0" />
+
+                        <ui:Button Content="Cancel"
+                                   Appearance="Secondary"
+                                   Command="{Binding CancelActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </TabItem>
 
@@ -117,7 +170,20 @@
 
                         <ui:Button Content="+ Add WaitText"
                                    Appearance="Primary"
-                                   Command="{Binding AddWaitForTextActionCommand}" />
+                                   Command="{Binding AddWaitForTextActionCommand}"
+                                   Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}" />
+
+                        <ui:Button Content="Save Changes"
+                                   Appearance="Primary"
+                                   FontWeight="SemiBold"
+                                   Command="{Binding SaveActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                   Margin="0,0,8,0" />
+
+                        <ui:Button Content="Cancel"
+                                   Appearance="Secondary"
+                                   Command="{Binding CancelActionEditCommand}"
+                                   Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}" />
                     </StackPanel>
                 </TabItem>
 
@@ -291,6 +357,12 @@
                                               Width="130"
                                               Margin="0,0,16,0" />
 
+                                    <TextBlock Text="Focus:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ComboBox ItemsSource="{Binding AvailableFocusBehaviors}"
+                                              SelectedItem="{Binding AutoConfirmFocusBehavior, Mode=TwoWay}"
+                                              Width="140"
+                                              Margin="0,0,16,0" />
+
                                     <TextBlock Text="Poll interval:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
                                     <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="85" Margin="0,0,4,0" />
                                     <TextBlock Text="{Binding AutoConfirmPollIntervalDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,16,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
@@ -303,7 +375,17 @@
                                     <ui:Button Content="+ Add AutoConfirm Action"
                                                Appearance="Primary"
                                                FontWeight="SemiBold"
+                                               Visibility="{Binding IsNotEditingAction, Converter={StaticResource BoolToVis}}"
                                                Command="{Binding AddSafeAutoConfirmActionCommand}" />
+                                    <ui:Button Content="Save Changes"
+                                               Appearance="Primary"
+                                               FontWeight="SemiBold"
+                                               Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                               Command="{Binding SaveActionEditCommand}"
+                                               Margin="0,0,8,0" />
+                                    <ui:Button Content="Cancel"
+                                               Visibility="{Binding IsEditingAction, Converter={StaticResource BoolToVis}}"
+                                               Command="{Binding CancelActionEditCommand}" />
                                 </WrapPanel>
                             </StackPanel>
                         </Border>
@@ -325,11 +407,18 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0"
-                               Text="Macro Action Sequence"
-                               FontSize="16"
-                               FontWeight="SemiBold"
-                               VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Macro Action Sequence"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding CurrentProfileDisplay}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource AccentFillColorDefaultBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="12,0,0,0" />
+                    </StackPanel>
                     <ui:Button Grid.Column="1"
                                Content="Clear All"
                                Icon="{ui:SymbolIcon Delete24}"
@@ -339,6 +428,7 @@
                 <ListBox Grid.Row="1"
                          ItemsSource="{Binding Actions}"
                          SelectedItem="{Binding SelectedAction, Mode=TwoWay}"
+                         MouseDoubleClick="OnActionsListMouseDoubleClick"
                          HorizontalContentAlignment="Stretch"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ScrollViewer.VerticalScrollBarVisibility="Auto">
@@ -404,6 +494,12 @@
 
                                     <!-- Action Buttons -->
                                     <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <ui:Button Icon="{ui:SymbolIcon Edit20}"
+                                                   ToolTip="Edit Action"
+                                                   Padding="6,4"
+                                                   Margin="0,0,4,0"
+                                                   Command="{Binding DataContext.EditActionCommand, RelativeSource={RelativeSource AncestorType=Page}}"
+                                                   CommandParameter="{Binding}" />
                                         <ui:Button Icon="{ui:SymbolIcon ArrowUp20}"
                                                    ToolTip="Move Up"
                                                    Padding="6,4"

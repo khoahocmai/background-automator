@@ -89,7 +89,7 @@ public sealed partial class MainViewModel : ObservableObject
             OnTargetCommitted,
             () => CurrentTarget,
             (pts, settings) => SimpleVM.LoadFromProfile(pts, settings),
-            (acts, macroSettings) => MacroVM.LoadFromProfile(acts, macroSettings),
+            (acts, macroSettings, profileName) => MacroVM.LoadFromProfile(acts, macroSettings, profileName),
             () => SimpleVM.GetPoints(),
             () => new ClickRunnerSettingsConfig
             {
@@ -142,22 +142,23 @@ public sealed partial class MainViewModel : ObservableObject
     private void OnTargetCommitted(WindowTarget? target)
     {
         CurrentTarget = target;
-        if (target != null && TargetVM.CurrentTarget != target)
-        {
-            TargetVM.CommitTarget(target);
-        }
-        SimpleVM.SetCurrentTarget(target);
-        MacroVM.SetCurrentTarget(target);
-        ProfilesVM.SetCurrentTarget(target);
-
         if (target != null)
         {
+            if (TargetVM.CurrentTarget != target)
+            {
+                TargetVM.CommitTarget(target);
+            }
             StatusTargetText = $"Target: {target.ProcessName} ({HwndFormatter.FormatShort(target.TargetHwnd)})";
         }
         else
         {
+            TargetVM.ClearTarget();
             StatusTargetText = "Target: None";
         }
+
+        SimpleVM.SetCurrentTarget(target);
+        MacroVM.SetCurrentTarget(target);
+        ProfilesVM.SetCurrentTarget(target);
     }
 
     private void OnSimpleRunnerStateChanged(RunnerState state, int cycles, int clicks)

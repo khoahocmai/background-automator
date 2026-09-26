@@ -16,10 +16,10 @@ public sealed partial class ProfilesViewModel : ObservableObject
     private readonly ProfileStorageService _profileStorage;
     private readonly TargetResolver _targetResolver;
     private readonly IAppLogger _logger;
-    private readonly Action<WindowTarget> _onTargetCommitted;
+    private readonly Action<WindowTarget?> _onTargetCommitted;
     private readonly Func<WindowTarget?> _getCurrentTarget;
     private readonly Action<List<ClickPoint>, ClickRunnerSettingsConfig?> _loadSimpleProfile;
-    private readonly Action<List<IMacroAction>, MacroRunnerSettingsConfig?> _loadMacroProfile;
+    private readonly Action<List<IMacroAction>, MacroRunnerSettingsConfig?, string?> _loadMacroProfile;
     private readonly Func<List<ClickPoint>> _getSimplePoints;
     private readonly Func<ClickRunnerSettingsConfig> _getSimpleSettings;
     private readonly Func<List<IMacroAction>> _getMacroActions;
@@ -36,10 +36,25 @@ public sealed partial class ProfilesViewModel : ObservableObject
     private string _profileName = "DefaultProfile";
 
     [ObservableProperty]
+    private string? _currentLoadedProfileName;
+
+    partial void OnCurrentLoadedProfileNameChanged(string? value) => OnPropertyChanged(nameof(LoadedProfileDisplay));
+
+    public string LoadedProfileDisplay => string.IsNullOrEmpty(CurrentLoadedProfileName)
+        ? "Loaded Profile: [None]"
+        : $"Loaded Profile: {CurrentLoadedProfileName}";
+
+    [ObservableProperty]
     private int _selectedModeIndex = 0; // 0: Simple Mode, 1: Macro Mode
 
     [ObservableProperty]
-    private string _targetDescriptorText = "Target Descriptor: [No target selected]";
+    private string _savedTargetText = "Saved Target: [No target loaded]";
+
+    [ObservableProperty]
+    private string _runtimeTargetText = "Runtime Target: None";
+
+    [ObservableProperty]
+    private string _targetDescriptorText = "Saved Target: [No target loaded]";
 
     [ObservableProperty]
     private TargetDescriptor? _activeProfileTarget;
@@ -53,10 +68,10 @@ public sealed partial class ProfilesViewModel : ObservableObject
         ProfileStorageService profileStorage,
         TargetResolver targetResolver,
         IAppLogger logger,
-        Action<WindowTarget> onTargetCommitted,
+        Action<WindowTarget?> onTargetCommitted,
         Func<WindowTarget?> getCurrentTarget,
         Action<List<ClickPoint>, ClickRunnerSettingsConfig?> loadSimpleProfile,
-        Action<List<IMacroAction>, MacroRunnerSettingsConfig?> loadMacroProfile,
+        Action<List<IMacroAction>, MacroRunnerSettingsConfig?, string?> loadMacroProfile,
         Func<List<ClickPoint>> getSimplePoints,
         Func<ClickRunnerSettingsConfig> getSimpleSettings,
         Func<List<IMacroAction>> getMacroActions,
@@ -89,7 +104,14 @@ public sealed partial class ProfilesViewModel : ObservableObject
         if (target != null && target.IsWindowValid())
         {
             ActiveProfileTarget = TargetDescriptor.FromWindowTarget(target, TitleMatchMode.Contains);
-            TargetDescriptorText = $"Target: {ActiveProfileTarget.ProcessName} (Title: '{ActiveProfileTarget.WindowTitle ?? "*"}' Mode: {ActiveProfileTarget.MatchMode})";
+            SavedTargetText = $"Saved Target: {ActiveProfileTarget.ProcessName} (Title: '{ActiveProfileTarget.WindowTitle ?? "*"}' Mode: {ActiveProfileTarget.MatchMode})";
+            RuntimeTargetText = $"Runtime Target: Resolved — {target.ProcessName} ({HwndFormatter.FormatShort(target.TargetHwnd)})";
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+        }
+        else
+        {
+            RuntimeTargetText = "Runtime Target: None";
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
         }
     }
 
@@ -107,12 +129,13 @@ public sealed partial class ProfilesViewModel : ObservableObject
 
             if (profile.Target != null)
             {
-                TargetDescriptorText = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
+                SavedTargetText = $"Saved Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
             }
             else
             {
-                TargetDescriptorText = "Target Descriptor: [No target in profile]";
+                SavedTargetText = "Saved Target: [No target in profile]";
             }
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
         }
         catch
         {
@@ -255,6 +278,7 @@ public sealed partial class ProfilesViewModel : ObservableObject
         {
             var profile = _profileStorage.LoadProfileByName(name);
             ProfileName = profile.Name;
+            CurrentLoadedProfileName = profile.Name;
             SelectedModeIndex = profile.Mode == ProfileMode.Macro ? 1 : 0;
             ActiveProfileTarget = profile.Target;
             string? startupName = _profileStorage.GetStartupProfileName();
@@ -264,31 +288,53 @@ public sealed partial class ProfilesViewModel : ObservableObject
 
             if (profile.Target != null)
             {
-                TargetDescriptorText = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
+                SavedTargetText = $"Saved Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
 
-                var res = _targetResolver.Resolve(profile.Target);
-                if (res.IsSuccess && res.Target != null)
+                // Section 20: If currently selected live target is compatible, reuse it
+                var currentLiveTarget = _getCurrentTarget();
+                if (currentLiveTarget != null && currentLiveTarget.IsWindowValid() && IsTargetCompatible(currentLiveTarget, profile.Target))
                 {
-                    _onTargetCommitted(res.Target);
-                    _logger.Info($"Re-resolved profile target to HWND {HwndFormatter.Format(res.Target.TargetHwnd)}");
-                }
-                else if (res.Status == TargetResolutionStatus.Ambiguous)
-                {
-                    _logger.Warning($"Target re-resolution ambiguous: {res.Candidates.Count} matching windows found.");
-                    if (showDialogs)
-                    {
-                        MessageBox.Show($"Multiple matching windows ({res.Candidates.Count}) found for process '{profile.Target.ProcessName}'. Please select the specific window in Target Inspector.",
-                            "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    }
+                    _onTargetCommitted(currentLiveTarget);
+                    RuntimeTargetText = $"Runtime Target: Resolved — {currentLiveTarget.ProcessName} ({HwndFormatter.FormatShort(currentLiveTarget.TargetHwnd)})";
+                    TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+                    _logger.Info($"Reused existing live target HWND {HwndFormatter.Format(currentLiveTarget.TargetHwnd)} for profile '{profile.Name}'");
                 }
                 else
                 {
-                    _logger.Warning($"Target re-resolution: {res.Message}");
-                    TargetDescriptorText = $"Target not found: {profile.Target.ProcessName}";
+                    var res = _targetResolver.Resolve(profile.Target);
+                    if (res.IsSuccess && res.Target != null)
+                    {
+                        _onTargetCommitted(res.Target);
+                        RuntimeTargetText = $"Runtime Target: Resolved — {res.Target.ProcessName} ({HwndFormatter.FormatShort(res.Target.TargetHwnd)})";
+                        TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+                        _logger.Info($"Re-resolved profile target to HWND {HwndFormatter.Format(res.Target.TargetHwnd)}");
+                    }
+                    else if (res.Status == TargetResolutionStatus.Ambiguous)
+                    {
+                        _onTargetCommitted(null);
+                        RuntimeTargetText = $"Runtime Target: Ambiguous — {res.Candidates.Count} matching windows found";
+                        TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+                        _logger.Warning($"Target re-resolution ambiguous: {res.Candidates.Count} matching windows found.");
+                        if (showDialogs)
+                        {
+                            MessageBox.Show($"Multiple matching windows ({res.Candidates.Count}) found for process '{profile.Target.ProcessName}'. Please select the specific window in Target Inspector.",
+                                "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        }
+                    }
+                    else
+                    {
+                        _onTargetCommitted(null);
+                        RuntimeTargetText = $"Runtime Target: Not found ({profile.Target.ProcessName})";
+                        TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+                        _logger.Warning($"Target re-resolution: {res.Message}");
+                    }
                 }
             }
             else
             {
+                _onTargetCommitted(null);
+                SavedTargetText = "Saved Target: [No target in profile]";
+                RuntimeTargetText = "Runtime Target: None";
                 TargetDescriptorText = "Target Descriptor: [None]";
             }
 
@@ -301,11 +347,15 @@ public sealed partial class ProfilesViewModel : ObservableObject
             else
             {
                 var actions = profile.MacroActions.Select(a => a.ToMacroAction()).ToList();
-                _loadMacroProfile(actions, profile.MacroSettings);
+                _loadMacroProfile(actions, profile.MacroSettings, profile.Name);
             }
 
             _markClean?.Invoke();
             _logger.Info($"Profile '{profile.Name}' loaded successfully (Auto-run not triggered).");
+            if (showDialogs)
+            {
+                MessageBox.Show($"Loaded profile: {profile.Name}", "Profile Loaded", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         catch (Exception ex)
         {
@@ -318,7 +368,11 @@ public sealed partial class ProfilesViewModel : ObservableObject
     }
 
     [RelayCommand]
-    public void ReResolveTarget()
+    public void ReResolveTarget() => ReResolveTarget(showDialogs: true);
+
+    public void ReResolveTargetSilently() => ReResolveTarget(showDialogs: false);
+
+    public void ReResolveTarget(bool showDialogs)
     {
         var currentTarget = _getCurrentTarget();
         if (ActiveProfileTarget == null && currentTarget != null)
@@ -328,27 +382,102 @@ public sealed partial class ProfilesViewModel : ObservableObject
 
         if (ActiveProfileTarget == null)
         {
-            MessageBox.Show("No target descriptor is currently loaded or configured.", "Re-resolve Target", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (showDialogs)
+            {
+                MessageBox.Show("No target descriptor is currently loaded or configured.", "Re-resolve Target", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
             return;
         }
+
+        SavedTargetText = $"Saved Target: {ActiveProfileTarget.ProcessName} (Title: '{ActiveProfileTarget.WindowTitle ?? "*"}' Mode: {ActiveProfileTarget.MatchMode})";
 
         var res = _targetResolver.Resolve(ActiveProfileTarget);
         if (res.IsSuccess && res.Target != null)
         {
             _onTargetCommitted(res.Target);
+            RuntimeTargetText = $"Runtime Target: Resolved — {res.Target.ProcessName} ({HwndFormatter.FormatShort(res.Target.TargetHwnd)})";
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
             _logger.Info($"Target re-resolved successfully to HWND {HwndFormatter.Format(res.Target.TargetHwnd)}");
-            MessageBox.Show($"Target re-resolved successfully to HWND {HwndFormatter.Format(res.Target.TargetHwnd)} ({res.Target.ProcessName})",
-                "Re-resolve Target", MessageBoxButton.OK, MessageBoxImage.Information);
+            if (showDialogs)
+            {
+                MessageBox.Show($"Target re-resolved successfully to HWND {HwndFormatter.Format(res.Target.TargetHwnd)} ({res.Target.ProcessName})",
+                    "Re-resolve Target", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         else if (res.Status == TargetResolutionStatus.Ambiguous)
         {
-            MessageBox.Show($"Found {res.Candidates.Count} matching windows. Ambiguity must be resolved manually via Target Inspector.",
-                "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _onTargetCommitted(null);
+            RuntimeTargetText = $"Runtime Target: Ambiguous — {res.Candidates.Count} matching windows found";
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+            _logger.Warning($"Target re-resolution ambiguous: {res.Candidates.Count} matching windows found.");
+            if (showDialogs)
+            {
+                MessageBox.Show($"Found {res.Candidates.Count} matching windows. Ambiguity must be resolved manually via Target Inspector.",
+                    "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         else
         {
-            MessageBox.Show($"Target not found: {res.Message}", "Target Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _onTargetCommitted(null);
+            RuntimeTargetText = $"Runtime Target: Not found ({ActiveProfileTarget.ProcessName})";
+            TargetDescriptorText = $"{SavedTargetText}\n{RuntimeTargetText}";
+            _logger.Warning($"Target re-resolution: {res.Message}");
+            if (showDialogs)
+            {
+                MessageBox.Show($"Target not found: {res.Message}", "Target Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
+    }
+
+    public static bool IsTargetCompatible(WindowTarget target, TargetDescriptor descriptor)
+    {
+        if (target == null || descriptor == null)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(descriptor.ProcessName))
+        {
+            string tProc = NormalizeProcessName(target.ProcessName);
+            string dProc = NormalizeProcessName(descriptor.ProcessName);
+            if (!string.Equals(tProc, dProc, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(descriptor.WindowClass))
+        {
+            if (!string.Equals(target.WindowClass, descriptor.WindowClass, StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        if (descriptor.MatchMode != TitleMatchMode.Any && !string.IsNullOrEmpty(descriptor.WindowTitle))
+        {
+            bool titleMatches = descriptor.MatchMode switch
+            {
+                TitleMatchMode.Exact => string.Equals(target.WindowTitle, descriptor.WindowTitle, StringComparison.Ordinal),
+                TitleMatchMode.Contains => target.WindowTitle.Contains(descriptor.WindowTitle, StringComparison.OrdinalIgnoreCase),
+                TitleMatchMode.StartsWith => target.WindowTitle.StartsWith(descriptor.WindowTitle, StringComparison.OrdinalIgnoreCase),
+                _ => true
+            };
+            if (!titleMatches)
+                return false;
+        }
+
+        if (descriptor.ChildDescriptor != null)
+        {
+            if (!string.IsNullOrWhiteSpace(descriptor.ChildDescriptor.ControlClass) &&
+                !string.Equals(target.WindowClass, descriptor.ChildDescriptor.ControlClass, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string NormalizeProcessName(string procName)
+    {
+        if (procName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            return procName[..^4];
+        return procName;
     }
 
     [RelayCommand]

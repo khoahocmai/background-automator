@@ -17,10 +17,29 @@
         <!-- Section 1: Profile Configuration & Actions -->
         <ui:Card Grid.Row="0" Padding="16" Margin="0,0,0,14">
             <StackPanel>
-                <TextBlock Text="Profile Configuration &amp; Target Re-Resolution"
-                           FontSize="16"
-                           FontWeight="SemiBold"
-                           Margin="0,0,0,12" />
+                <Grid Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Profile Configuration &amp; Target Re-Resolution"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <Border Grid.Column="1"
+                            Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="8,4"
+                            VerticalAlignment="Center">
+                        <TextBlock Text="{Binding LoadedProfileDisplay}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
+                    </Border>
+                </Grid>
 
                 <!-- Profile Name and Mode -->
                 <Grid Margin="0,0,0,12">
@@ -54,12 +73,26 @@
                         BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                         BorderThickness="1"
                         CornerRadius="6"
-                        Padding="10,8"
+                        Padding="12,10"
                         Margin="0,0,0,14">
-                    <TextBlock Text="{Binding TargetDescriptorText}"
-                               FontWeight="Medium"
-                               Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
-                               TextTrimming="CharacterEllipsis" />
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <TextBlock Grid.Row="0"
+                                   Text="{Binding SavedTargetText}"
+                                   FontWeight="Medium"
+                                   Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}"
+                                   Margin="0,0,0,4"
+                                   TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Row="1"
+                                   Text="{Binding RuntimeTargetText}"
+                                   FontWeight="SemiBold"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   TextTrimming="CharacterEllipsis" />
+                    </Grid>
                 </Border>
 
                 <!-- Actions Row -->

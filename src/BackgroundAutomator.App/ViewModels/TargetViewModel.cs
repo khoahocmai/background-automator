@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Drawing;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -214,8 +214,14 @@ public sealed partial class TargetViewModel : ObservableObject
         }
     }
 
-    public void CommitTarget(WindowTarget target)
+    public void CommitTarget(WindowTarget? target)
     {
+        if (target == null)
+        {
+            ClearTarget();
+            return;
+        }
+
         if (CurrentTarget == target)
             return;
 
@@ -235,6 +241,28 @@ public sealed partial class TargetViewModel : ObservableObject
                 break;
             }
         }
+    }
+
+    public void ClearTarget(string status = "No target selected", string color = "#666666")
+    {
+        CurrentTarget = null;
+        IsTargetActive = false;
+        SelectedCandidate = null;
+        ProcessName = "-";
+        WindowTitle = "-";
+        PidText = "-";
+        ThreadIdText = "-";
+        RootHwndText = "-";
+        TargetHwndText = "-";
+        ParentHwndText = "-";
+        WindowClassText = "-";
+        ScreenCoordsText = "X: - | Y: -";
+        ClientCoordsText = "X: - | Y: -";
+        TargetStatus = status;
+        TargetStatusColor = color;
+        ElevationText = "-";
+        HasUipiMismatch = false;
+        CanRestartAdmin = false;
     }
 
     private void DisplayTargetInfo(WindowTarget target, string statusText, string statusColor)

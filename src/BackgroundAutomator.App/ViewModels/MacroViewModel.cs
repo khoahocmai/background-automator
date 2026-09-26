@@ -57,6 +57,38 @@ public sealed partial class MacroViewModel : ObservableObject
     [ObservableProperty]
     private bool _isDirty;
 
+    [ObservableProperty]
+    private string? _currentProfileName;
+
+    partial void OnCurrentProfileNameChanged(string? value) => OnPropertyChanged(nameof(CurrentProfileDisplay));
+    partial void OnIsDirtyChanged(bool value) => OnPropertyChanged(nameof(CurrentProfileDisplay));
+
+    public string CurrentProfileDisplay => string.IsNullOrEmpty(CurrentProfileName) ? "[Default Profile]" : (IsDirty ? $"{CurrentProfileName} *" : CurrentProfileName);
+
+    [ObservableProperty]
+    private bool _isEditingAction;
+
+    [ObservableProperty]
+    private MacroActionItem? _editingActionItem;
+
+    partial void OnIsEditingActionChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsNotEditingAction));
+        OnPropertyChanged(nameof(BuilderHeader));
+    }
+
+    public bool IsNotEditingAction => !IsEditingAction;
+
+    public string BuilderHeader => IsEditingAction
+        ? $"Edit Action #{EditingActionItem?.Index}: {EditingActionItem?.Name}"
+        : "+ Add Macro Action";
+
+    // Safe Auto Confirm focus behavior
+    public IReadOnlyList<FocusBehavior> AvailableFocusBehaviors { get; } = Enum.GetValues<FocusBehavior>();
+
+    [ObservableProperty]
+    private FocusBehavior _autoConfirmFocusBehavior = FocusBehavior.FastPulse;
+
     // Macro Repeat Configuration
     public IReadOnlyList<MacroRepeatMode> AvailableRepeatModes { get; } = Enum.GetValues<MacroRepeatMode>();
 
@@ -539,12 +571,227 @@ public sealed partial class MacroViewModel : ObservableObject
             deliveryMode: KeyDeliveryMode.ForegroundPulse,
             timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
             pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
-            waitMode: AutoConfirmWaitMode);
+            waitMode: AutoConfirmWaitMode,
+            focusBehavior: AutoConfirmFocusBehavior);
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
-        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}] Rules count: {rules.Count}");
+        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}, {AutoConfirmFocusBehavior}] Rules count: {rules.Count}");
+    }
+
+    [RelayCommand]
+    public void EditAction(MacroActionItem? item)
+    {
+        var target = item ?? SelectedAction;
+        if (target == null)
+            return;
+
+        EditingActionItem = target;
+        IsEditingAction = true;
+        SelectedAction = target;
+        PopulateBuilderFromAction(target.Action);
+    }
+
+    [RelayCommand]
+    public void CancelActionEdit()
+    {
+        IsEditingAction = false;
+        EditingActionItem = null;
+    }
+
+    [RelayCommand]
+    public void SaveActionEdit()
+    {
+        if (!IsEditingAction || EditingActionItem == null)
+            return;
+
+        IMacroAction updatedAction;
+        switch (SelectedActionCategoryIndex)
+        {
+            case 0: // Mouse
+                if (EditingActionItem.Action is DoubleClickAction)
+                {
+                    updatedAction = new DoubleClickAction(ActionX, ActionY);
+                }
+                else
+                {
+                    updatedAction = new ClickAction(ActionX, ActionY);
+                }
+                break;
+
+            case 1: // Keyboard
+                updatedAction = new PressKeyAction(SelectedKey);
+                break;
+
+            case 2: // Timing
+                updatedAction = new DelayAction(DelayMilliseconds);
+                break;
+
+            case 3: // Wait for Color
+                Color col;
+                try
+                {
+                    string hex = WaitColorHex.Trim();
+                    if (!hex.StartsWith('#')) hex = "#" + hex;
+                    col = ColorTranslator.FromHtml(hex);
+                }
+                catch
+                {
+                    MessageBox.Show("Invalid hex color format. Use #RRGGBB (e.g. #00FF00)", "Invalid Color", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                updatedAction = new WaitColorAction(ActionX, ActionY, col, WaitColorTol, TimeSpan.FromMilliseconds(WaitColorTimeoutMs));
+                break;
+
+            case 4: // Wait for Text
+                if (string.IsNullOrWhiteSpace(WaitForTextExpected))
+                {
+                    MessageBox.Show("Please enter expected text to wait for.", "Invalid Text", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                updatedAction = new WaitForTextAction(
+                    WaitForTextExpected,
+                    WaitForTextMatchMode,
+                    timeout: TimeSpan.FromMilliseconds(WaitForTextTimeoutMs),
+                    pollInterval: TimeSpan.FromMilliseconds(WaitForTextPollIntervalMs));
+                break;
+
+            case 5: // Safe Auto Confirm
+                if (string.IsNullOrWhiteSpace(AutoConfirmPrompt))
+                {
+                    MessageBox.Show("Please enter the expected prompt text.", "Invalid Prompt", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (AutoConfirmRules.Count == 1 && !string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand) && AutoConfirmRules[0].CommandText != AutoConfirmAllowedCommand.Trim())
+                {
+                    AutoConfirmRules[0].CommandText = AutoConfirmAllowedCommand.Trim();
+                }
+
+                List<CommandApprovalRule> rules;
+                if (AutoConfirmRules.Count > 0)
+                {
+                    rules = AutoConfirmRules.Select(r => r.ToRule(
+                        AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+                        AutoConfirmPrompt.Trim(),
+                        AutoConfirmSelectedOption?.Trim() ?? "Yes, run command")).ToList();
+                }
+                else
+                {
+                    if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
+                    {
+                        MessageBox.Show("Please enter an allowed command or add rules to the rule set.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+
+                    var singleRule = new CommandApprovalRule
+                    {
+                        Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
+                        ExpectedProcess = AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+                        ExpectedPrompt = AutoConfirmPrompt.Trim(),
+                        ExpectedSelectedOption = AutoConfirmSelectedOption?.Trim() ?? "Yes, run command",
+                        AllowedCommand = AutoConfirmAllowedCommand.Trim(),
+                        CommandMatchMode = CommandMatchMode.Exact,
+                        Enabled = true
+                    };
+                    rules = new List<CommandApprovalRule> { singleRule };
+                }
+
+                var ruleSet = new ApprovalRuleSet
+                {
+                    Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
+                    ExpectedProcess = AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+                    ExpectedPrompt = AutoConfirmPrompt.Trim(),
+                    ExpectedSelectedOption = AutoConfirmSelectedOption?.Trim() ?? "Yes, run command",
+                    Rules = rules
+                };
+
+                updatedAction = new SafeAutoConfirmAction(
+                    ruleSet,
+                    executionMode: AutoConfirmExecutionMode,
+                    deliveryMode: KeyDeliveryMode.ForegroundPulse,
+                    timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
+                    pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
+                    waitMode: AutoConfirmWaitMode,
+                    focusBehavior: AutoConfirmFocusBehavior);
+                break;
+
+            default:
+                return;
+        }
+
+        EditingActionItem.UpdateAction(updatedAction);
+        _logger.Info($"Updated Macro Action #{EditingActionItem.Index} in place: {updatedAction.DisplayString}");
+        IsDirty = true;
+        IsEditingAction = false;
+        EditingActionItem = null;
+        StatusText = $"State: IDLE | Actions: {Actions.Count}";
+    }
+
+    private void PopulateBuilderFromAction(IMacroAction action)
+    {
+        switch (action)
+        {
+            case ClickAction ca:
+                SelectedActionCategoryIndex = 0;
+                ActionX = ca.ClientX;
+                ActionY = ca.ClientY;
+                break;
+            case DoubleClickAction dca:
+                SelectedActionCategoryIndex = 0;
+                ActionX = dca.ClientX;
+                ActionY = dca.ClientY;
+                break;
+            case PressKeyAction pka:
+                SelectedActionCategoryIndex = 1;
+                SelectedKey = pka.Key;
+                break;
+            case DelayAction da:
+                SelectedActionCategoryIndex = 2;
+                DelayMilliseconds = da.Milliseconds;
+                break;
+            case WaitColorAction wca:
+                SelectedActionCategoryIndex = 3;
+                ActionX = wca.ClientX;
+                ActionY = wca.ClientY;
+                WaitColorHex = $"#{wca.TargetColor.R:X2}{wca.TargetColor.G:X2}{wca.TargetColor.B:X2}";
+                WaitColorTol = wca.Tolerance;
+                WaitColorTimeoutMs = (int)wca.Timeout.TotalMilliseconds;
+                break;
+            case WaitForTextAction wta:
+                SelectedActionCategoryIndex = 4;
+                WaitForTextExpected = wta.ExpectedText;
+                WaitForTextMatchMode = wta.MatchMode;
+                WaitForTextTimeoutMs = (int)wta.Timeout.TotalMilliseconds;
+                WaitForTextPollIntervalMs = (int)wta.PollInterval.TotalMilliseconds;
+                break;
+            case SafeAutoConfirmAction saca:
+                SelectedActionCategoryIndex = 5;
+                AutoConfirmRuleName = saca.RuleSet.Name;
+                AutoConfirmProcess = saca.RuleSet.ExpectedProcess ?? "WindowsTerminal.exe";
+                AutoConfirmPrompt = saca.RuleSet.ExpectedPrompt ?? "Run this command?";
+                AutoConfirmSelectedOption = saca.RuleSet.ExpectedSelectedOption ?? "Yes, run command";
+                AutoConfirmRules.Clear();
+                foreach (var r in saca.RuleSet.Rules)
+                {
+                    AutoConfirmRules.Add(new CommandApprovalRuleItem(r.Name, r.AllowedCommand, r.Enabled));
+                }
+                if (saca.RuleSet.Rules.Count == 1)
+                {
+                    AutoConfirmAllowedCommand = saca.RuleSet.Rules[0].AllowedCommand;
+                }
+                else
+                {
+                    AutoConfirmAllowedCommand = string.Empty;
+                }
+                AutoConfirmExecutionMode = saca.ExecutionMode;
+                AutoConfirmWaitMode = saca.WaitMode;
+                AutoConfirmPollIntervalMs = (int)saca.PollInterval.TotalMilliseconds;
+                AutoConfirmTimeoutMs = (int)saca.Timeout.TotalMilliseconds;
+                AutoConfirmFocusBehavior = saca.FocusBehavior;
+                break;
+        }
     }
 
     [RelayCommand]
@@ -589,6 +836,11 @@ public sealed partial class MacroViewModel : ObservableObject
         var target = item ?? SelectedAction;
         if (target != null)
         {
+            if (EditingActionItem == target)
+            {
+                CancelActionEdit();
+            }
+
             int index = Actions.IndexOf(target);
             Actions.Remove(target);
             ReindexActions();
@@ -608,6 +860,7 @@ public sealed partial class MacroViewModel : ObservableObject
     [RelayCommand]
     public void ClearAllActions()
     {
+        CancelActionEdit();
         Actions.Clear();
         IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
@@ -666,8 +919,9 @@ public sealed partial class MacroViewModel : ObservableObject
         }
     }
 
-    public void LoadFromProfile(List<IMacroAction> actions, MacroRunnerSettingsConfig? settings = null)
+    public void LoadFromProfile(List<IMacroAction> actions, MacroRunnerSettingsConfig? settings = null, string? profileName = null)
     {
+        CancelActionEdit();
         Actions.Clear();
         for (int i = 0; i < actions.Count; i++)
         {
@@ -684,8 +938,15 @@ public sealed partial class MacroViewModel : ObservableObject
             CycleDelayMilliseconds = Math.Max(0, settings.CycleDelayMilliseconds);
         }
 
+        CurrentProfileName = profileName;
         IsDirty = false;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
+
+        // Section 15, Option A: Automatically select first macro action and populate builder
+        if (Actions.Count > 0)
+        {
+            EditAction(Actions[0]);
+        }
     }
 
     public List<IMacroAction> GetActions() => Actions.Select(a => a.Action).ToList();
