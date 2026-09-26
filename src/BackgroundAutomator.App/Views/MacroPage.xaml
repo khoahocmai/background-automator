@@ -195,20 +195,78 @@
                             </StackPanel>
                         </Border>
 
-                        <!-- Row 3: Approval Group -->
+                        <!-- Row 3: Approval Group (Multi-Rule Rule Set) -->
                         <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
                                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                                 BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,0,10">
                             <StackPanel Orientation="Vertical">
-                                <TextBlock Text="Approval" FontWeight="SemiBold" FontSize="12"
-                                           Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
-                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                    <TextBlock Text="Allowed command:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
-                                    <ui:TextBox Text="{Binding AutoConfirmAllowedCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                Width="320" Margin="0,0,20,0" />
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Approval Rule Set (Exact Match Only)" FontWeight="SemiBold" FontSize="12"
+                                               Foreground="{DynamicResource AccentFillColorDefaultBrush}" VerticalAlignment="Center" />
+                                    <ui:Button Grid.Column="1" Content="Clear Rules" Padding="6,2" FontSize="11"
+                                               Command="{Binding ClearApprovalRulesCommand}" />
+                                </Grid>
 
-                                    <TextBlock Text="Match:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
-                                    <ui:TextBox Text="Exact" IsReadOnly="True" Width="80" Margin="0,0,10,0" />
+                                <!-- Add Rule Row -->
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
+                                    <TextBlock Text="Rule name:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="{Binding NewRuleName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="140" Margin="0,0,10,0" PlaceholderText="e.g. Test Suite" />
+
+                                    <TextBlock Text="Command:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="{Binding NewRuleCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="280" Margin="0,0,10,0" PlaceholderText="e.g. dotnet test BackgroundAutomator.sln" />
+
+                                    <ui:Button Content="+ Add Rule to Set" Appearance="Primary"
+                                               Command="{Binding AddApprovalRuleCommand}" Margin="0,0,10,0" />
+                                </WrapPanel>
+
+                                <!-- Rules List -->
+                                <ItemsControl ItemsSource="{Binding AutoConfirmRules}" Margin="0,0,0,4">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{DynamicResource SubtleFillColorSecondaryBrush}"
+                                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                                    BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,2">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="150" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <CheckBox Grid.Column="0" IsChecked="{Binding IsEnabled, Mode=TwoWay}"
+                                                              VerticalAlignment="Center" Margin="0,0,8,0" ToolTip="Enabled / Disabled" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding Name}" FontWeight="SemiBold"
+                                                               VerticalAlignment="Center" Margin="0,0,8,0" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding CommandText}" FontFamily="Consolas"
+                                                               VerticalAlignment="Center" Margin="0,0,8,0" TextTrimming="CharacterEllipsis" />
+                                                    <Border Grid.Column="3" Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                                            CornerRadius="3" Padding="6,2" Margin="0,0,8,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="Exact" FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                                    </Border>
+                                                    <ui:Button Grid.Column="4" Icon="{ui:SymbolIcon Dismiss16}" Appearance="Danger" Padding="4,2"
+                                                               Command="{Binding DataContext.DeleteApprovalRuleCommand, RelativeSource={RelativeSource AncestorType=Page}}"
+                                                               CommandParameter="{Binding}" ToolTip="Remove rule" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Quick fallback input if no rules in list -->
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,4,0,0">
+                                    <TextBlock Text="Quick / Single command:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    <ui:TextBox Text="{Binding AutoConfirmAllowedCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="320" Margin="0,0,12,0" PlaceholderText="Used if no rules added to list above" />
+                                    <TextBlock Text="(Used when rules list above is empty)" VerticalAlignment="Center" FontSize="11"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 </WrapPanel>
                             </StackPanel>
                         </Border>
@@ -224,16 +282,23 @@
                                     <TextBlock Text="Mode:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
                                     <ComboBox ItemsSource="{Binding AvailableExecutionModes}"
                                               SelectedItem="{Binding AutoConfirmExecutionMode, Mode=TwoWay}"
-                                              Width="150"
-                                              Margin="0,0,20,0" />
+                                              Width="140"
+                                              Margin="0,0,16,0" />
+
+                                    <TextBlock Text="Wait:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ComboBox ItemsSource="{Binding AvailableWaitModes}"
+                                              SelectedItem="{Binding AutoConfirmWaitMode, Mode=TwoWay}"
+                                              Width="130"
+                                              Margin="0,0,16,0" />
 
                                     <TextBlock Text="Poll interval:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
                                     <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="85" Margin="0,0,4,0" />
-                                    <TextBlock Text="{Binding AutoConfirmPollIntervalDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,20,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <TextBlock Text="{Binding AutoConfirmPollIntervalDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,16,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
 
                                     <TextBlock Text="Timeout:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
-                                    <ui:NumberBox Value="{Binding AutoConfirmTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="95" Margin="0,0,4,0" />
-                                    <TextBlock Text="{Binding AutoConfirmTimeoutDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,24,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <ui:NumberBox Value="{Binding AutoConfirmTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="95" Margin="0,0,4,0"
+                                                  IsEnabled="{Binding IsAutoConfirmTimeoutEnabled}" />
+                                    <TextBlock Text="{Binding AutoConfirmTimeoutDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,20,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
 
                                     <ui:Button Content="+ Add AutoConfirm Action"
                                                Appearance="Primary"
@@ -368,7 +433,27 @@
 
         <!-- Section 3: Execution Controls -->
         <ui:Card Grid.Row="2" Padding="14">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+            <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="Repeat:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="SemiBold" />
+                <ComboBox ItemsSource="{Binding AvailableRepeatModes}"
+                          SelectedItem="{Binding RepeatMode, Mode=TwoWay}"
+                          Width="130" Margin="0,0,12,0" />
+
+                <StackPanel Orientation="Horizontal"
+                            Visibility="{Binding IsRepeatCountVisible, Converter={StaticResource BoolToVis}}"
+                            Margin="0,0,12,0" VerticalAlignment="Center">
+                    <TextBlock Text="Count:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                    <ui:NumberBox Value="{Binding RepeatCount, Mode=TwoWay}" Minimum="1" Maximum="10000" Width="80" />
+                </StackPanel>
+
+                <StackPanel Orientation="Horizontal"
+                            Visibility="{Binding IsCycleDelayVisible, Converter={StaticResource BoolToVis}}"
+                            Margin="0,0,16,0" VerticalAlignment="Center">
+                    <TextBlock Text="Cycle delay:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                    <ui:NumberBox Value="{Binding CycleDelayMilliseconds, Mode=TwoWay}" Minimum="0" Maximum="60000" Width="80" Margin="0,0,4,0" />
+                    <TextBlock Text="ms" VerticalAlignment="Center" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+
                 <ui:Button Content="▶ Run Macro"
                            Appearance="Success"
                            Command="{Binding RunMacroCommand}"
@@ -387,10 +472,10 @@
                            Margin="0,0,16,0" />
                 <TextBlock Text="{Binding StatusText}"
                            Foreground="{Binding StatusColor}"
-                           FontSize="14"
+                           FontSize="13"
                            FontWeight="SemiBold"
                            VerticalAlignment="Center" />
-            </StackPanel>
+            </WrapPanel>
         </ui:Card>
     </Grid>
 </Page>

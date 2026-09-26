@@ -11,6 +11,7 @@ using BackgroundAutomator.Core.Logging;
 using BackgroundAutomator.Core.Targeting;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Approval;
+using BackgroundAutomator.Core.Profiles;
 using BackgroundAutomator.Core.TextDetection;
 
 namespace BackgroundAutomator.App.ViewModels;
@@ -53,9 +54,37 @@ public sealed partial class MacroViewModel : ObservableObject
     [ObservableProperty]
     private bool _canStop = false;
 
+    [ObservableProperty]
+    private bool _isDirty;
+
+    // Macro Repeat Configuration
+    public IReadOnlyList<MacroRepeatMode> AvailableRepeatModes { get; } = Enum.GetValues<MacroRepeatMode>();
+
+    [ObservableProperty]
+    private MacroRepeatMode _repeatMode = MacroRepeatMode.Once;
+
+    [ObservableProperty]
+    private int _repeatCount = 1;
+
+    [ObservableProperty]
+    private int _cycleDelayMilliseconds = 500;
+
+    partial void OnRepeatModeChanged(MacroRepeatMode value)
+    {
+        OnPropertyChanged(nameof(IsRepeatCountVisible));
+        OnPropertyChanged(nameof(IsCycleDelayVisible));
+        IsDirty = true;
+    }
+
+    partial void OnRepeatCountChanged(int value) => IsDirty = true;
+    partial void OnCycleDelayMillisecondsChanged(int value) => IsDirty = true;
+
+    public bool IsRepeatCountVisible => RepeatMode == MacroRepeatMode.Count;
+    public bool IsCycleDelayVisible => RepeatMode != MacroRepeatMode.Once;
+
     // Action builder configuration fields
     [ObservableProperty]
-    private int _selectedActionCategoryIndex = 0; // 0: Mouse, 1: Keyboard, 2: Timing, 3: Condition
+    private int _selectedActionCategoryIndex = 0; // 0: Mouse, 1: Keyboard, 2: Timing, 3: Wait Color, 4: Wait Text, 5: Safe Auto Confirm
 
     [ObservableProperty]
     private int _actionX = 50;
@@ -89,6 +118,7 @@ public sealed partial class MacroViewModel : ObservableObject
 
     // Safe Auto Confirm configuration fields
     public IReadOnlyList<AutoConfirmExecutionMode> AvailableExecutionModes { get; } = Enum.GetValues<AutoConfirmExecutionMode>();
+    public IReadOnlyList<AutoConfirmWaitMode> AvailableWaitModes { get; } = Enum.GetValues<AutoConfirmWaitMode>();
 
     [ObservableProperty]
     private string _autoConfirmRuleName = "Approve BackgroundAutomator tests";
@@ -109,10 +139,30 @@ public sealed partial class MacroViewModel : ObservableObject
     private AutoConfirmExecutionMode _autoConfirmExecutionMode = AutoConfirmExecutionMode.ObserveOnly;
 
     [ObservableProperty]
+    private AutoConfirmWaitMode _autoConfirmWaitMode = AutoConfirmWaitMode.FixedTimeout;
+
+    [ObservableProperty]
     private int _autoConfirmPollIntervalMs = 500;
 
     [ObservableProperty]
     private int _autoConfirmTimeoutMs = 60000;
+
+    // Multi-Command Rule Set UI collection
+    public ObservableCollection<CommandApprovalRuleItem> AutoConfirmRules { get; } = new();
+
+    [ObservableProperty]
+    private string _newRuleName = string.Empty;
+
+    [ObservableProperty]
+    private string _newRuleCommand = string.Empty;
+
+    partial void OnAutoConfirmWaitModeChanged(AutoConfirmWaitMode value)
+    {
+        OnPropertyChanged(nameof(IsAutoConfirmTimeoutEnabled));
+        OnPropertyChanged(nameof(AutoConfirmTimeoutDisplay));
+    }
+
+    public bool IsAutoConfirmTimeoutEnabled => AutoConfirmWaitMode == AutoConfirmWaitMode.FixedTimeout;
 
     partial void OnAutoConfirmPollIntervalMsChanged(int value)
     {
@@ -126,9 +176,12 @@ public sealed partial class MacroViewModel : ObservableObject
 
     public string AutoConfirmPollIntervalDisplay => $"{AutoConfirmPollIntervalMs} ms";
 
-    public string AutoConfirmTimeoutDisplay => AutoConfirmTimeoutMs >= 1000 && AutoConfirmTimeoutMs % 1000 == 0
-        ? $"{AutoConfirmTimeoutMs / 1000} sec"
-        : $"{AutoConfirmTimeoutMs / 1000.0:0.#} sec";
+    public string AutoConfirmTimeoutDisplay =>
+        AutoConfirmWaitMode == AutoConfirmWaitMode.Indefinite
+            ? "Indefinite"
+            : (AutoConfirmTimeoutMs >= 1000 && AutoConfirmTimeoutMs % 1000 == 0
+                ? $"{AutoConfirmTimeoutMs / 1000} sec"
+                : $"{AutoConfirmTimeoutMs / 1000.0:0.#} sec");
 
     public MacroViewModel(
         MacroRunner macroRunner,
@@ -203,11 +256,48 @@ public sealed partial class MacroViewModel : ObservableObject
             });
         };
 
+        _macroRunner.CycleStarting += cycle =>
+        {
+            Application.Current?.Dispatcher?.InvokeAsync(() =>
+            {
+                string cycleText = RepeatMode switch
+                {
+                    MacroRepeatMode.Count => $"Cycle [{cycle}/{RepeatCount}]",
+                    MacroRepeatMode.UntilStopped => $"Cycle [{cycle}]",
+                    _ => string.Empty
+                };
+
+                string prefix = string.IsNullOrEmpty(cycleText) ? "State: RUNNING" : $"State: RUNNING | {cycleText}";
+                StatusText = $"{prefix} | Starting...";
+            });
+        };
+
+        _macroRunner.CycleCompleted += cycle =>
+        {
+            Application.Current?.Dispatcher?.InvokeAsync(() =>
+            {
+                string cycleText = RepeatMode switch
+                {
+                    MacroRepeatMode.Count => $"Cycle [{cycle}/{RepeatCount}] completed",
+                    MacroRepeatMode.UntilStopped => $"Cycle [{cycle}] completed",
+                    _ => "Completed"
+                };
+                StatusText = $"State: RUNNING | {cycleText}";
+            });
+        };
+
         _macroRunner.ActionStarting += (index, action) =>
         {
             Application.Current?.Dispatcher?.InvokeAsync(() =>
             {
-                StatusText = $"State: RUNNING | Action [{index + 1}/{Actions.Count}]: {action.Name}";
+                string cycleText = RepeatMode switch
+                {
+                    MacroRepeatMode.Count => $"Cycle [{_macroRunner.CurrentCycle}/{RepeatCount}] | ",
+                    MacroRepeatMode.UntilStopped => $"Cycle [{_macroRunner.CurrentCycle}] | ",
+                    _ => string.Empty
+                };
+
+                StatusText = $"State: RUNNING | {cycleText}Action [{index + 1}/{Actions.Count}]: {action.Name}";
                 if (index >= 0 && index < Actions.Count)
                 {
                     Actions[index].SetStatus("Running...", "#0078D4");
@@ -220,7 +310,14 @@ public sealed partial class MacroViewModel : ObservableObject
         {
             Application.Current?.Dispatcher?.InvokeAsync(() =>
             {
-                StatusText = $"State: RUNNING | Action [{index + 1}/{Actions.Count}]: {action.Name} ({progress})";
+                string cycleText = RepeatMode switch
+                {
+                    MacroRepeatMode.Count => $"Cycle [{_macroRunner.CurrentCycle}/{RepeatCount}] | ",
+                    MacroRepeatMode.UntilStopped => $"Cycle [{_macroRunner.CurrentCycle}] | ",
+                    _ => string.Empty
+                };
+
+                StatusText = $"State: RUNNING | {cycleText}Action [{index + 1}/{Actions.Count}]: {action.Name} ({progress})";
                 if (index >= 0 && index < Actions.Count)
                 {
                     string color = progress.StartsWith("Blocked", StringComparison.OrdinalIgnoreCase) ? "#D83B01" : "#0078D4";
@@ -256,11 +353,43 @@ public sealed partial class MacroViewModel : ObservableObject
                 {
                     statusDesc = $"Timeout ({result.BlockerReason})";
                 }
-                StatusText = $"Finished: {statusDesc} ({result.CompletedActionsCount}/{result.TotalActionsCount} in {result.ElapsedTime.TotalMilliseconds:F0}ms)";
+                string cycleInfo = result.CompletedCyclesCount > 0 ? $" in {result.CompletedCyclesCount} cycle(s)" : string.Empty;
+                StatusText = $"Finished: {statusDesc} ({result.CompletedActionsCount}/{result.TotalActionsCount}{cycleInfo} in {result.ElapsedTime.TotalMilliseconds:F0}ms)";
                 StatusColor = color;
                 _onMacroStateChanged(MacroRunnerState.Idle, StatusText);
             });
         };
+    }
+
+    [RelayCommand]
+    public void AddApprovalRule()
+    {
+        string cmd = NewRuleCommand.Trim();
+        if (string.IsNullOrWhiteSpace(cmd))
+        {
+            MessageBox.Show("Please enter the command text to allow.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        string name = string.IsNullOrWhiteSpace(NewRuleName) ? cmd : NewRuleName.Trim();
+        AutoConfirmRules.Add(new CommandApprovalRuleItem(name, cmd));
+        NewRuleName = string.Empty;
+        NewRuleCommand = string.Empty;
+    }
+
+    [RelayCommand]
+    public void DeleteApprovalRule(CommandApprovalRuleItem? item)
+    {
+        if (item != null)
+        {
+            AutoConfirmRules.Remove(item);
+        }
+    }
+
+    [RelayCommand]
+    public void ClearApprovalRules()
+    {
+        AutoConfirmRules.Clear();
     }
 
     [RelayCommand]
@@ -278,6 +407,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         var action = new ClickAction(ActionX, ActionY);
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro Click at ({ActionX}, {ActionY})");
     }
@@ -287,6 +417,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         var action = new DoubleClickAction(ActionX, ActionY);
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro DoubleClick at ({ActionX}, {ActionY})");
     }
@@ -296,6 +427,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         var action = new PressKeyAction(SelectedKey);
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro PressKey {SelectedKey}");
     }
@@ -305,6 +437,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         var action = new DelayAction(DelayMilliseconds);
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro Delay {DelayMilliseconds}ms");
     }
@@ -327,6 +460,7 @@ public sealed partial class MacroViewModel : ObservableObject
 
         var action = new WaitColorAction(ActionX, ActionY, col, WaitColorTol, TimeSpan.FromMilliseconds(WaitColorTimeoutMs));
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro WaitColor at ({ActionX}, {ActionY}) RGB({col.R},{col.G},{col.B}) tol={WaitColorTol} timeout={WaitColorTimeoutMs}ms");
     }
@@ -347,6 +481,7 @@ public sealed partial class MacroViewModel : ObservableObject
             pollInterval: TimeSpan.FromMilliseconds(WaitForTextPollIntervalMs));
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
         _logger.Info($"Added Macro WaitForText: \"{WaitForTextExpected}\" ({WaitForTextMatchMode}, timeout={WaitForTextTimeoutMs}ms, poll={WaitForTextPollIntervalMs}ms)");
     }
@@ -354,39 +489,62 @@ public sealed partial class MacroViewModel : ObservableObject
     [RelayCommand]
     public void AddSafeAutoConfirmAction()
     {
-        if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
-        {
-            MessageBox.Show("Please enter the exact allowed command to auto-confirm.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
         if (string.IsNullOrWhiteSpace(AutoConfirmPrompt))
         {
             MessageBox.Show("Please enter the expected prompt text.", "Invalid Prompt", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var rule = new CommandApprovalRule
+        List<CommandApprovalRule> rules;
+        if (AutoConfirmRules.Count > 0)
+        {
+            rules = AutoConfirmRules.Select(r => r.ToRule(
+                AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+                AutoConfirmPrompt.Trim(),
+                AutoConfirmSelectedOption?.Trim() ?? "Yes, run command")).ToList();
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
+            {
+                MessageBox.Show("Please enter an allowed command or add rules to the rule set.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var singleRule = new CommandApprovalRule
+            {
+                Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
+                ExpectedProcess = AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
+                ExpectedPrompt = AutoConfirmPrompt.Trim(),
+                ExpectedSelectedOption = AutoConfirmSelectedOption?.Trim() ?? "Yes, run command",
+                AllowedCommand = AutoConfirmAllowedCommand.Trim(),
+                CommandMatchMode = CommandMatchMode.Exact,
+                Enabled = true
+            };
+            rules = new List<CommandApprovalRule> { singleRule };
+        }
+
+        var ruleSet = new ApprovalRuleSet
         {
             Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
             ExpectedProcess = AutoConfirmProcess?.Trim() ?? "WindowsTerminal.exe",
             ExpectedPrompt = AutoConfirmPrompt.Trim(),
             ExpectedSelectedOption = AutoConfirmSelectedOption?.Trim() ?? "Yes, run command",
-            AllowedCommand = AutoConfirmAllowedCommand.Trim(),
-            CommandMatchMode = CommandMatchMode.Exact,
-            Enabled = true
+            Rules = rules
         };
 
         var action = new SafeAutoConfirmAction(
-            rule,
+            ruleSet,
             executionMode: AutoConfirmExecutionMode,
             deliveryMode: KeyDeliveryMode.ForegroundPulse,
             timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
-            pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs));
+            pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
+            waitMode: AutoConfirmWaitMode);
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
-        _logger.Info($"Added Macro SafeAutoConfirm: \"{rule.Name}\" [{AutoConfirmExecutionMode}] Command: \"{rule.AllowedCommand}\"");
+        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}] Rules count: {rules.Count}");
     }
 
     [RelayCommand]
@@ -403,6 +561,7 @@ public sealed partial class MacroViewModel : ObservableObject
             Actions.Insert(index - 1, target);
             ReindexActions();
             SelectedAction = target;
+            IsDirty = true;
         }
     }
 
@@ -420,6 +579,7 @@ public sealed partial class MacroViewModel : ObservableObject
             Actions.Insert(index + 1, target);
             ReindexActions();
             SelectedAction = target;
+            IsDirty = true;
         }
     }
 
@@ -440,6 +600,7 @@ public sealed partial class MacroViewModel : ObservableObject
             {
                 SelectedAction = Actions[^1];
             }
+            IsDirty = true;
             StatusText = $"State: IDLE | Actions: {Actions.Count}";
         }
     }
@@ -448,6 +609,7 @@ public sealed partial class MacroViewModel : ObservableObject
     public void ClearAllActions()
     {
         Actions.Clear();
+        IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
     }
 
@@ -487,7 +649,12 @@ public sealed partial class MacroViewModel : ObservableObject
 
         var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget.TargetHwnd, _keyboard);
         var actionList = Actions.Select(a => a.Action).ToList();
-        _ = _macroRunner.RunAsync(actionList, context);
+        var settings = new MacroRunnerSettings(
+            RepeatMode,
+            Math.Max(1, RepeatCount),
+            Math.Max(0, CycleDelayMilliseconds));
+
+        _ = _macroRunner.RunAsync(actionList, context, settings);
     }
 
     [RelayCommand]
@@ -499,15 +666,34 @@ public sealed partial class MacroViewModel : ObservableObject
         }
     }
 
-    public void LoadFromProfile(List<IMacroAction> actions)
+    public void LoadFromProfile(List<IMacroAction> actions, MacroRunnerSettingsConfig? settings = null)
     {
         Actions.Clear();
         for (int i = 0; i < actions.Count; i++)
         {
             Actions.Add(new MacroActionItem(i + 1, actions[i]));
         }
+
+        if (settings != null)
+        {
+            if (Enum.TryParse<MacroRepeatMode>(settings.RepeatMode, ignoreCase: true, out var mode))
+            {
+                RepeatMode = mode;
+            }
+            RepeatCount = Math.Max(1, settings.RepeatCount);
+            CycleDelayMilliseconds = Math.Max(0, settings.CycleDelayMilliseconds);
+        }
+
+        IsDirty = false;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
     }
 
     public List<IMacroAction> GetActions() => Actions.Select(a => a.Action).ToList();
+
+    public MacroRunnerSettingsConfig GetMacroSettingsConfig() => new()
+    {
+        RepeatMode = RepeatMode.ToString(),
+        RepeatCount = RepeatCount,
+        CycleDelayMilliseconds = CycleDelayMilliseconds
+    };
 }

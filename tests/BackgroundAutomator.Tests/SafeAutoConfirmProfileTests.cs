@@ -171,4 +171,108 @@ public class SafeAutoConfirmProfileTests : IDisposable
         Assert.IsType<PressKeyAction>(actions[4]);
         Assert.IsType<WaitForTextAction>(actions[5]);
     }
+
+    [Fact]
+    public void MacroActionConfig_RoundTrips_MultiRule_RuleSet_And_WaitMode_Indefinite()
+    {
+        var rule1 = new CommandApprovalRule { Name = "Build", AllowedCommand = "dotnet build" };
+        var rule2 = new CommandApprovalRule { Name = "Test", AllowedCommand = "dotnet test" };
+        var rule3 = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date", Enabled = false };
+
+        var ruleSet = new ApprovalRuleSet("DevSet", new[] { rule1, rule2, rule3 });
+        var action = new SafeAutoConfirmAction(
+            ruleSet,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            waitMode: AutoConfirmWaitMode.Indefinite);
+
+        var config = MacroActionConfig.FromMacroAction(action);
+
+        Assert.Equal("SafeAutoConfirm", config.ActionType);
+        Assert.Equal("Indefinite", config.WaitMode);
+        Assert.NotNull(config.RuleSet);
+        Assert.Equal(3, config.RuleSet.Rules.Count);
+        Assert.Equal("dotnet build", config.AllowedCommand); // legacy fallback populated
+
+        var restored = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+
+        Assert.Equal(AutoConfirmWaitMode.Indefinite, restored.WaitMode);
+        Assert.Equal("DevSet", restored.RuleSet.Name);
+        Assert.Equal(3, restored.RuleSet.Rules.Count);
+        Assert.Equal("dotnet build", restored.RuleSet.Rules[0].AllowedCommand);
+        Assert.Equal("dotnet test", restored.RuleSet.Rules[1].AllowedCommand);
+        Assert.Equal("Get-Date", restored.RuleSet.Rules[2].AllowedCommand);
+        Assert.False(restored.RuleSet.Rules[2].Enabled);
+    }
+
+    [Fact]
+    public void Legacy_SafeAutoConfirm_Without_RuleSet_Migrates_To_RuleSet()
+    {
+        string legacyJson = @"{
+  ""actionType"": ""SafeAutoConfirm"",
+  ""ruleName"": ""Legacy Rule"",
+  ""expectedProcess"": ""WindowsTerminal.exe"",
+  ""expectedPrompt"": ""Run this command?"",
+  ""expectedSelectedOption"": ""Yes, run command"",
+  ""allowedCommand"": ""Get-Date"",
+  ""commandMatchMode"": ""Exact"",
+  ""executionMode"": ""ObserveOnly"",
+  ""deliveryMode"": ""ForegroundPulse"",
+  ""timeoutMs"": 60000,
+  ""pollIntervalMs"": 500
+}";
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<MacroActionConfig>(legacyJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(config);
+        Assert.Null(config.RuleSet);
+        Assert.Null(config.WaitMode);
+
+        var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+
+        Assert.Equal(AutoConfirmWaitMode.FixedTimeout, action.WaitMode);
+        Assert.NotNull(action.RuleSet);
+        var singleRule = Assert.Single(action.RuleSet.Rules);
+        Assert.Equal("Get-Date", singleRule.AllowedCommand);
+        Assert.Equal("Legacy Rule", singleRule.Name);
+        Assert.True(singleRule.Enabled);
+    }
+
+    [Fact]
+    public void Profile_With_MacroSettings_And_Startup_Saves_And_Loads()
+    {
+        var profile = new ProfileModel
+        {
+            Name = "ContinuousWatcherProfile",
+            Mode = ProfileMode.Macro,
+            IsStartupProfile = true,
+            MacroSettings = new MacroRunnerSettingsConfig
+            {
+                RepeatMode = "UntilStopped",
+                RepeatCount = 1,
+                CycleDelayMilliseconds = 250
+            }
+        };
+
+        _storage.SaveProfile(profile);
+
+        var loaded = _storage.LoadProfileByName("ContinuousWatcherProfile");
+        Assert.NotNull(loaded);
+        Assert.True(loaded.IsStartupProfile);
+        Assert.NotNull(loaded.MacroSettings);
+        Assert.Equal("UntilStopped", loaded.MacroSettings.RepeatMode);
+        Assert.Equal(250, loaded.MacroSettings.CycleDelayMilliseconds);
+    }
+
+    [Fact]
+    public void AppPreferences_Saves_And_Loads_Startup_And_LastUsed()
+    {
+        _storage.SetStartupProfileName("MyStartupProfile");
+        _storage.SetLastUsedProfileName("MyLastProfile");
+
+        Assert.Equal("MyStartupProfile", _storage.GetStartupProfileName());
+        Assert.Equal("MyLastProfile", _storage.GetLastUsedProfileName());
+
+        var prefs = _storage.LoadAppPreferences();
+        Assert.Equal("MyStartupProfile", prefs.StartupProfileName);
+        Assert.Equal("MyLastProfile", prefs.LastUsedProfileName);
+    }
 }

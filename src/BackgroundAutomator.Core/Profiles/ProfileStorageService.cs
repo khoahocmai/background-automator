@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BackgroundAutomator.Core.Logging;
@@ -233,5 +233,80 @@ public class ProfileStorageService
 
         string sanitized = sb.ToString().Trim();
         return string.IsNullOrEmpty(sanitized) ? "UnnamedProfile" : sanitized;
+    }
+
+    /// <summary>
+    /// Path to the app settings file.
+    /// </summary>
+    public string AppSettingsFilePath => Path.Combine(
+        Path.GetDirectoryName(_profilesDirectory) ?? _profilesDirectory,
+        "appsettings.json");
+
+    /// <summary>
+    /// Loads application preferences from disk.
+    /// </summary>
+    public AppPreferences LoadAppPreferences()
+    {
+        try
+        {
+            if (File.Exists(AppSettingsFilePath))
+            {
+                string json = File.ReadAllText(AppSettingsFilePath, Encoding.UTF8);
+                var prefs = JsonSerializer.Deserialize<AppPreferences>(json, JsonOptions);
+                if (prefs != null) return prefs;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.Warning($"Failed to load app preferences: {ex.Message}");
+        }
+        return new AppPreferences();
+    }
+
+    /// <summary>
+    /// Saves application preferences to disk atomically.
+    /// </summary>
+    public void SaveAppPreferences(AppPreferences preferences)
+    {
+        ArgumentNullException.ThrowIfNull(preferences);
+        try
+        {
+            string dir = Path.GetDirectoryName(AppSettingsFilePath) ?? _profilesDirectory;
+            Directory.CreateDirectory(dir);
+            string tempPath = Path.Combine(dir, $"{Guid.NewGuid():N}.tmp");
+            string json = JsonSerializer.Serialize(preferences, JsonOptions);
+
+            using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            using (var writer = new StreamWriter(fs, Encoding.UTF8))
+            {
+                writer.Write(json);
+                writer.Flush();
+                fs.Flush(flushToDisk: true);
+            }
+
+            File.Move(tempPath, AppSettingsFilePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Warning($"Failed to save app preferences: {ex.Message}");
+        }
+    }
+
+    public string? GetLastUsedProfileName() => LoadAppPreferences().LastUsedProfileName;
+
+    public void SetLastUsedProfileName(string? profileName)
+    {
+        var prefs = LoadAppPreferences();
+        prefs.LastUsedProfileName = profileName;
+        SaveAppPreferences(prefs);
+    }
+
+    public string? GetStartupProfileName() => LoadAppPreferences().StartupProfileName;
+
+    public void SetStartupProfileName(string? profileName)
+    {
+        var prefs = LoadAppPreferences();
+        prefs.StartupProfileName = profileName;
+        SaveAppPreferences(prefs);
     }
 }

@@ -28,18 +28,25 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="220" />
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="150" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
                     <TextBlock Grid.Column="0" Text="Profile Name:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
-                    <ui:TextBox Grid.Column="1" Text="{Binding ProfileName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,24,0" />
+                    <ui:TextBox Grid.Column="1" Text="{Binding ProfileName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,20,0" />
 
                     <TextBlock Grid.Column="2" Text="Mode:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
-                    <ComboBox Grid.Column="3" SelectedIndex="{Binding SelectedModeIndex, Mode=TwoWay}">
+                    <ComboBox Grid.Column="3" SelectedIndex="{Binding SelectedModeIndex, Mode=TwoWay}" Margin="0,0,20,0">
                         <ComboBoxItem Content="Simple Mode" />
                         <ComboBoxItem Content="Macro Mode" />
                     </ComboBox>
+
+                    <CheckBox Grid.Column="4" Content="Load on Startup"
+                              IsChecked="{Binding IsStartupProfile, Mode=TwoWay}"
+                              VerticalAlignment="Center"
+                              FontWeight="Medium"
+                              ToolTip="Automatically restore this profile and target when BackgroundAutomator starts (macro will NOT auto-run)." />
                 </Grid>
 
                 <!-- Target Descriptor Display -->
@@ -64,6 +71,10 @@
                     <ui:Button Content="📂 Load Profile"
                                Appearance="Secondary"
                                Command="{Binding LoadSelectedProfileCommand}"
+                               Margin="0,0,8,0" />
+                    <ui:Button Content="⭐ Toggle Startup"
+                               Appearance="Secondary"
+                               Command="{Binding ToggleStartupProfileCommand}"
                                Margin="0,0,8,0" />
                     <ui:Button Content="🔄 Re-resolve Target"
                                Appearance="Secondary"
@@ -90,7 +101,7 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
-                               Text="Saved Profiles"
+                               Text="Saved Profiles (★ indicates Startup Profile)"
                                FontSize="16"
                                FontWeight="SemiBold"
                                VerticalAlignment="Center" />
@@ -106,7 +117,7 @@
                           MouseDoubleClick="OnProfilesListMouseDoubleClick">
                     <ListView.View>
                         <GridView>
-                            <GridViewColumn Header="Profile Name" Width="180" DisplayMemberBinding="{Binding Name}" />
+                            <GridViewColumn Header="Profile Name" Width="180" DisplayMemberBinding="{Binding DisplayName}" />
                             <GridViewColumn Header="Mode" Width="90" DisplayMemberBinding="{Binding ModeString}" />
                             <GridViewColumn Header="Target Process / Window" Width="260" DisplayMemberBinding="{Binding TargetDescription}" />
                             <GridViewColumn Header="Items" Width="70" DisplayMemberBinding="{Binding ItemCount}" />

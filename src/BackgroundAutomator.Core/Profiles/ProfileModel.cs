@@ -24,4 +24,6 @@ public sealed class ProfileModel
     public ClickRunnerSettingsConfig? SimpleSettings { get; set; }
     public List<ClickPointConfig> ClickPoints { get; set; } = new();
     public List<MacroActionConfig> MacroActions { get; set; } = new();
+    public MacroRunnerSettingsConfig? MacroSettings { get; set; }
+    public bool IsStartupProfile { get; set; }
 }

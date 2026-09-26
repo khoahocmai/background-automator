@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -19,10 +19,13 @@ public sealed partial class ProfilesViewModel : ObservableObject
     private readonly Action<WindowTarget> _onTargetCommitted;
     private readonly Func<WindowTarget?> _getCurrentTarget;
     private readonly Action<List<ClickPoint>, ClickRunnerSettingsConfig?> _loadSimpleProfile;
-    private readonly Action<List<IMacroAction>> _loadMacroProfile;
+    private readonly Action<List<IMacroAction>, MacroRunnerSettingsConfig?> _loadMacroProfile;
     private readonly Func<List<ClickPoint>> _getSimplePoints;
     private readonly Func<ClickRunnerSettingsConfig> _getSimpleSettings;
     private readonly Func<List<IMacroAction>> _getMacroActions;
+    private readonly Func<MacroRunnerSettingsConfig>? _getMacroSettings;
+    private readonly Func<bool>? _getIsDirty;
+    private readonly Action? _markClean;
 
     public ObservableCollection<ProfileListItem> Profiles { get; } = new();
 
@@ -41,6 +44,11 @@ public sealed partial class ProfilesViewModel : ObservableObject
     [ObservableProperty]
     private TargetDescriptor? _activeProfileTarget;
 
+    [ObservableProperty]
+    private bool _isStartupProfile;
+
+    public bool HasUnsavedChanges => _getIsDirty?.Invoke() ?? false;
+
     public ProfilesViewModel(
         ProfileStorageService profileStorage,
         TargetResolver targetResolver,
@@ -48,10 +56,13 @@ public sealed partial class ProfilesViewModel : ObservableObject
         Action<WindowTarget> onTargetCommitted,
         Func<WindowTarget?> getCurrentTarget,
         Action<List<ClickPoint>, ClickRunnerSettingsConfig?> loadSimpleProfile,
-        Action<List<IMacroAction>> loadMacroProfile,
+        Action<List<IMacroAction>, MacroRunnerSettingsConfig?> loadMacroProfile,
         Func<List<ClickPoint>> getSimplePoints,
         Func<ClickRunnerSettingsConfig> getSimpleSettings,
-        Func<List<IMacroAction>> getMacroActions)
+        Func<List<IMacroAction>> getMacroActions,
+        Func<MacroRunnerSettingsConfig>? getMacroSettings = null,
+        Func<bool>? getIsDirty = null,
+        Action? markClean = null)
     {
         _profileStorage = profileStorage;
         _targetResolver = targetResolver;
@@ -63,6 +74,9 @@ public sealed partial class ProfilesViewModel : ObservableObject
         _getSimplePoints = getSimplePoints;
         _getSimpleSettings = getSimpleSettings;
         _getMacroActions = getMacroActions;
+        _getMacroSettings = getMacroSettings;
+        _getIsDirty = getIsDirty;
+        _markClean = markClean;
     }
 
     public void Initialize()
@@ -89,6 +103,8 @@ public sealed partial class ProfilesViewModel : ObservableObject
         {
             var profile = _profileStorage.LoadProfileByName(value.Name);
             SelectedModeIndex = profile.Mode == ProfileMode.Macro ? 1 : 0;
+            IsStartupProfile = string.Equals(value.Name, _profileStorage.GetStartupProfileName(), StringComparison.OrdinalIgnoreCase);
+
             if (profile.Target != null)
             {
                 TargetDescriptorText = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
@@ -110,11 +126,16 @@ public sealed partial class ProfilesViewModel : ObservableObject
         try
         {
             var headers = _profileStorage.ListProfiles();
+            string? startupName = _profileStorage.GetStartupProfileName();
+
             Profiles.Clear();
             foreach (var h in headers)
             {
-                Profiles.Add(new ProfileListItem(h));
+                bool isStartup = string.Equals(h.Name, startupName, StringComparison.OrdinalIgnoreCase);
+                Profiles.Add(new ProfileListItem(h, isStartup));
             }
+
+            IsStartupProfile = string.Equals(ProfileName, startupName, StringComparison.OrdinalIgnoreCase);
         }
         catch (Exception ex)
         {
@@ -136,7 +157,8 @@ public sealed partial class ProfilesViewModel : ObservableObject
         var profile = new ProfileModel
         {
             Name = name,
-            Mode = mode
+            Mode = mode,
+            IsStartupProfile = IsStartupProfile
         };
 
         var currentTarget = _getCurrentTarget();
@@ -157,12 +179,25 @@ public sealed partial class ProfilesViewModel : ObservableObject
         else
         {
             profile.MacroActions = _getMacroActions().Select(MacroActionConfig.FromMacroAction).ToList();
+            profile.MacroSettings = _getMacroSettings?.Invoke();
         }
 
         try
         {
             _profileStorage.SaveProfile(profile);
+            _profileStorage.SetLastUsedProfileName(name);
+
+            if (IsStartupProfile)
+            {
+                _profileStorage.SetStartupProfileName(name);
+            }
+            else if (string.Equals(_profileStorage.GetStartupProfileName(), name, StringComparison.OrdinalIgnoreCase))
+            {
+                _profileStorage.SetStartupProfileName(null);
+            }
+
             ActiveProfileTarget = profile.Target;
+            _markClean?.Invoke();
             RefreshProfiles();
             _logger.Info($"Profile '{name}' saved successfully.");
             MessageBox.Show($"Profile '{name}' saved successfully.", "Save Profile", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -175,24 +210,62 @@ public sealed partial class ProfilesViewModel : ObservableObject
     }
 
     [RelayCommand]
+    public void ToggleStartupProfile()
+    {
+        string name = ProfileName.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        string? currentStartup = _profileStorage.GetStartupProfileName();
+        if (string.Equals(currentStartup, name, StringComparison.OrdinalIgnoreCase))
+        {
+            _profileStorage.SetStartupProfileName(null);
+            IsStartupProfile = false;
+            _logger.Info($"Startup profile cleared (was '{name}').");
+            MessageBox.Show($"Startup profile cleared.", "Startup Profile", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        else
+        {
+            _profileStorage.SetStartupProfileName(name);
+            IsStartupProfile = true;
+            _logger.Info($"Profile '{name}' set as startup profile.");
+            MessageBox.Show($"Profile '{name}' set as startup profile.", "Startup Profile", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        RefreshProfiles();
+    }
+
+    [RelayCommand]
     public void LoadSelectedProfile()
     {
         if (SelectedProfile == null)
             return;
 
-        string name = SelectedProfile.Name;
+        LoadProfileByName(SelectedProfile.Name, showDialogs: true);
+    }
+
+    public void LoadProfileByNameSilently(string name)
+    {
+        LoadProfileByName(name, showDialogs: false);
+    }
+
+    private void LoadProfileByName(string name, bool showDialogs)
+    {
         try
         {
             var profile = _profileStorage.LoadProfileByName(name);
             ProfileName = profile.Name;
             SelectedModeIndex = profile.Mode == ProfileMode.Macro ? 1 : 0;
             ActiveProfileTarget = profile.Target;
+            string? startupName = _profileStorage.GetStartupProfileName();
+            IsStartupProfile = string.Equals(name, startupName, StringComparison.OrdinalIgnoreCase);
+
+            _profileStorage.SetLastUsedProfileName(name);
 
             if (profile.Target != null)
             {
                 TargetDescriptorText = $"Target: {profile.Target.ProcessName} (Title: '{profile.Target.WindowTitle ?? "*"}' Mode: {profile.Target.MatchMode})";
 
-                // Attempt automatic re-resolution
                 var res = _targetResolver.Resolve(profile.Target);
                 if (res.IsSuccess && res.Target != null)
                 {
@@ -202,8 +275,11 @@ public sealed partial class ProfilesViewModel : ObservableObject
                 else if (res.Status == TargetResolutionStatus.Ambiguous)
                 {
                     _logger.Warning($"Target re-resolution ambiguous: {res.Candidates.Count} matching windows found.");
-                    MessageBox.Show($"Multiple matching windows ({res.Candidates.Count}) found for process '{profile.Target.ProcessName}'. Please select the specific window in Target Inspector.",
-                        "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    if (showDialogs)
+                    {
+                        MessageBox.Show($"Multiple matching windows ({res.Candidates.Count}) found for process '{profile.Target.ProcessName}'. Please select the specific window in Target Inspector.",
+                            "Ambiguous Target", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    }
                 }
                 else
                 {
@@ -225,15 +301,19 @@ public sealed partial class ProfilesViewModel : ObservableObject
             else
             {
                 var actions = profile.MacroActions.Select(a => a.ToMacroAction()).ToList();
-                _loadMacroProfile(actions);
+                _loadMacroProfile(actions, profile.MacroSettings);
             }
 
-            _logger.Info($"Profile '{profile.Name}' loaded successfully.");
+            _markClean?.Invoke();
+            _logger.Info($"Profile '{profile.Name}' loaded successfully (Auto-run not triggered).");
         }
         catch (Exception ex)
         {
             _logger.Error($"Failed to load profile '{name}'", ex);
-            MessageBox.Show($"Failed to load profile: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (showDialogs)
+            {
+                MessageBox.Show($"Failed to load profile: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
     }
 
@@ -282,6 +362,14 @@ public sealed partial class ProfilesViewModel : ObservableObject
             "Confirm Delete", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
         {
             _profileStorage.DeleteProfile(name);
+            if (string.Equals(_profileStorage.GetStartupProfileName(), name, StringComparison.OrdinalIgnoreCase))
+            {
+                _profileStorage.SetStartupProfileName(null);
+            }
+            if (string.Equals(_profileStorage.GetLastUsedProfileName(), name, StringComparison.OrdinalIgnoreCase))
+            {
+                _profileStorage.SetLastUsedProfileName(null);
+            }
             RefreshProfiles();
             _logger.Info($"Profile '{name}' deleted.");
         }

@@ -89,7 +89,7 @@ public sealed partial class MainViewModel : ObservableObject
             OnTargetCommitted,
             () => CurrentTarget,
             (pts, settings) => SimpleVM.LoadFromProfile(pts, settings),
-            acts => MacroVM.LoadFromProfile(acts),
+            (acts, macroSettings) => MacroVM.LoadFromProfile(acts, macroSettings),
             () => SimpleVM.GetPoints(),
             () => new ClickRunnerSettingsConfig
             {
@@ -97,7 +97,10 @@ public sealed partial class MainViewModel : ObservableObject
                 RepeatMode = SimpleVM.IsCount ? RepeatMode.Count : RepeatMode.UntilStopped,
                 RepeatCount = SimpleVM.RepeatCount
             },
-            () => MacroVM.GetActions());
+            () => MacroVM.GetActions(),
+            () => MacroVM.GetMacroSettingsConfig(),
+            () => MacroVM.IsDirty,
+            () => MacroVM.IsDirty = false);
 
         DiagnosticsVM = new DiagnosticsViewModel(_logger);
     }
@@ -107,7 +110,33 @@ public sealed partial class MainViewModel : ObservableObject
         TargetVM.MainWindowHwnd = mainWindowHwnd;
         TargetVM.Initialize();
         ProfilesVM.Initialize();
+
+        // Restore startup or last-used profile WITHOUT auto-running
+        RestoreStartupOrLastProfile();
+
         _logger.Info("BackgroundAutomator initialized (WPF Fluent UI)");
+    }
+
+    private void RestoreStartupOrLastProfile()
+    {
+        try
+        {
+            string? profileToLoad = _profileStorage.GetStartupProfileName();
+            if (string.IsNullOrWhiteSpace(profileToLoad))
+            {
+                profileToLoad = _profileStorage.GetLastUsedProfileName();
+            }
+
+            if (!string.IsNullOrWhiteSpace(profileToLoad))
+            {
+                _logger.Info($"Restoring saved profile '{profileToLoad}' on startup (Auto-run disabled).");
+                ProfilesVM.LoadProfileByNameSilently(profileToLoad);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning($"Failed to restore startup profile: {ex.Message}");
+        }
     }
 
     private void OnTargetCommitted(WindowTarget? target)

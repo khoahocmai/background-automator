@@ -22,7 +22,7 @@ public sealed class MacroActionConfig
     public string? ExpectedText { get; set; }
     public string? TextMatchMode { get; set; }
 
-    // SafeAutoConfirm properties
+    // SafeAutoConfirm properties (legacy single-rule compatibility)
     public string? RuleName { get; set; }
     public string? ExpectedProcess { get; set; }
     public string? ExpectedWindowClass { get; set; }
@@ -32,6 +32,10 @@ public sealed class MacroActionConfig
     public string? CommandMatchMode { get; set; }
     public string? ExecutionMode { get; set; }
     public string? DeliveryMode { get; set; }
+    public string? WaitMode { get; set; }
+
+    // SafeAutoConfirm multi-rule set property
+    public ApprovalRuleSetConfig? RuleSet { get; set; }
 
     public static MacroActionConfig FromMacroAction(IMacroAction action)
     {
@@ -80,17 +84,35 @@ public sealed class MacroActionConfig
             SafeAutoConfirmAction saca => new MacroActionConfig
             {
                 ActionType = "SafeAutoConfirm",
-                RuleName = saca.Rule.Name,
-                ExpectedProcess = saca.Rule.ExpectedProcess,
-                ExpectedWindowClass = saca.Rule.ExpectedWindowClass,
-                ExpectedPrompt = saca.Rule.ExpectedPrompt,
-                ExpectedSelectedOption = saca.Rule.ExpectedSelectedOption,
-                AllowedCommand = saca.Rule.AllowedCommand,
-                CommandMatchMode = saca.Rule.CommandMatchMode.ToString(),
+                RuleName = saca.RuleSet.Name,
+                ExpectedProcess = saca.RuleSet.ExpectedProcess,
+                ExpectedWindowClass = saca.RuleSet.ExpectedWindowClass,
+                ExpectedPrompt = saca.RuleSet.ExpectedPrompt,
+                ExpectedSelectedOption = saca.RuleSet.ExpectedSelectedOption,
+                AllowedCommand = saca.RuleSet.Rules.FirstOrDefault()?.AllowedCommand ?? string.Empty,
+                CommandMatchMode = (saca.RuleSet.Rules.FirstOrDefault()?.CommandMatchMode ?? Approval.CommandMatchMode.Exact).ToString(),
                 ExecutionMode = saca.ExecutionMode.ToString(),
                 DeliveryMode = saca.DeliveryMode.ToString(),
+                WaitMode = saca.WaitMode.ToString(),
                 TimeoutMs = (int)saca.Timeout.TotalMilliseconds,
-                PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds
+                PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds,
+                RuleSet = new ApprovalRuleSetConfig
+                {
+                    Id = saca.RuleSet.Id,
+                    Name = saca.RuleSet.Name,
+                    ExpectedProcess = saca.RuleSet.ExpectedProcess,
+                    ExpectedWindowClass = saca.RuleSet.ExpectedWindowClass,
+                    ExpectedPrompt = saca.RuleSet.ExpectedPrompt,
+                    ExpectedSelectedOption = saca.RuleSet.ExpectedSelectedOption,
+                    Rules = saca.RuleSet.Rules.Select(r => new CommandApprovalRuleConfig
+                    {
+                        Id = r.Id,
+                        Name = r.Name,
+                        AllowedCommand = r.AllowedCommand,
+                        CommandMatchMode = r.CommandMatchMode.ToString(),
+                        Enabled = r.Enabled
+                    }).ToList()
+                }
             },
             _ => throw new NotSupportedException($"Macro action type '{action.GetType().Name}' is not supported for serialization.")
         };
@@ -116,24 +138,70 @@ public sealed class MacroActionConfig
                 matchMode: ParseMatchMode(TextMatchMode),
                 timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
                 pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null),
-            "safeautoconfirm" => new SafeAutoConfirmAction(
-                new CommandApprovalRule
-                {
-                    Name = RuleName ?? "Safe Auto Confirm",
-                    ExpectedProcess = ExpectedProcess ?? "WindowsTerminal.exe",
-                    ExpectedWindowClass = ExpectedWindowClass,
-                    ExpectedPrompt = ExpectedPrompt ?? "Run this command?",
-                    ExpectedSelectedOption = ExpectedSelectedOption ?? "Yes, run command",
-                    AllowedCommand = AllowedCommand ?? string.Empty,
-                    CommandMatchMode = ParseCommandMatchMode(CommandMatchMode),
-                    Enabled = true
-                },
-                executionMode: ParseExecutionMode(ExecutionMode),
-                deliveryMode: ParseDeliveryMode(DeliveryMode),
-                timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
-                pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null),
+            "safeautoconfirm" => CreateSafeAutoConfirmAction(),
             _ => throw new InvalidOperationException($"Unknown or unsupported macro action type '{ActionType}'.")
         };
+    }
+
+    private SafeAutoConfirmAction CreateSafeAutoConfirmAction()
+    {
+        ApprovalRuleSet ruleSet;
+        if (RuleSet != null && RuleSet.Rules.Count > 0)
+        {
+            ruleSet = new ApprovalRuleSet
+            {
+                Id = RuleSet.Id ?? Guid.NewGuid(),
+                Name = RuleSet.Name ?? RuleName ?? "Safe Auto Confirm",
+                ExpectedProcess = RuleSet.ExpectedProcess ?? ExpectedProcess ?? "WindowsTerminal.exe",
+                ExpectedWindowClass = RuleSet.ExpectedWindowClass ?? ExpectedWindowClass,
+                ExpectedPrompt = RuleSet.ExpectedPrompt ?? ExpectedPrompt ?? "Run this command?",
+                ExpectedSelectedOption = RuleSet.ExpectedSelectedOption ?? ExpectedSelectedOption ?? "Yes, run command",
+                Rules = RuleSet.Rules.Select(rc => new CommandApprovalRule
+                {
+                    Id = rc.Id ?? Guid.NewGuid(),
+                    Name = rc.Name ?? "Approve Command",
+                    AllowedCommand = rc.AllowedCommand ?? string.Empty,
+                    CommandMatchMode = ParseCommandMatchMode(rc.CommandMatchMode),
+                    Enabled = rc.Enabled,
+                    ExpectedProcess = RuleSet.ExpectedProcess ?? ExpectedProcess ?? "WindowsTerminal.exe",
+                    ExpectedWindowClass = RuleSet.ExpectedWindowClass ?? ExpectedWindowClass,
+                    ExpectedPrompt = RuleSet.ExpectedPrompt ?? ExpectedPrompt ?? "Run this command?",
+                    ExpectedSelectedOption = RuleSet.ExpectedSelectedOption ?? ExpectedSelectedOption ?? "Yes, run command"
+                }).ToList()
+            };
+        }
+        else
+        {
+            var singleRule = new CommandApprovalRule
+            {
+                Name = RuleName ?? "Safe Auto Confirm",
+                ExpectedProcess = ExpectedProcess ?? "WindowsTerminal.exe",
+                ExpectedWindowClass = ExpectedWindowClass,
+                ExpectedPrompt = ExpectedPrompt ?? "Run this command?",
+                ExpectedSelectedOption = ExpectedSelectedOption ?? "Yes, run command",
+                AllowedCommand = AllowedCommand ?? string.Empty,
+                CommandMatchMode = ParseCommandMatchMode(CommandMatchMode),
+                Enabled = true
+            };
+            ruleSet = ApprovalRuleSet.FromSingleRule(singleRule);
+        }
+
+        return new SafeAutoConfirmAction(
+            ruleSet,
+            executionMode: ParseExecutionMode(ExecutionMode),
+            deliveryMode: ParseDeliveryMode(DeliveryMode),
+            timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
+            pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null,
+            waitMode: ParseWaitMode(WaitMode));
+    }
+
+    private static AutoConfirmWaitMode ParseWaitMode(string? waitMode)
+    {
+        if (Enum.TryParse<AutoConfirmWaitMode>(waitMode, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return AutoConfirmWaitMode.FixedTimeout;
     }
 
     private static TextDetection.TextMatchMode ParseMatchMode(string? matchMode)
