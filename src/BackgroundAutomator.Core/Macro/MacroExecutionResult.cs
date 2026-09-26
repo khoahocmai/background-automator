@@ -1,4 +1,4 @@
-﻿namespace BackgroundAutomator.Core.Macro;
+namespace BackgroundAutomator.Core.Macro;
 
 /// <summary>
 /// Final summary result of an entire macro sequence run.
@@ -8,7 +8,8 @@ public sealed record MacroExecutionResult(
     int CompletedActionsCount,
     int TotalActionsCount,
     TimeSpan ElapsedTime,
-    string? Message = null)
+    string? Message = null,
+    string? BlockerReason = null)
 {
     public bool IsSuccess => FinalStatus == MacroActionStatus.Success;
 }

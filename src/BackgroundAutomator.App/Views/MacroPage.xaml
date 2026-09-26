@@ -122,47 +122,126 @@
                 </TabItem>
 
                 <!-- Safe Auto Confirm Tab -->
-                <TabItem Header="Safe Auto Confirm">
-                    <StackPanel Orientation="Vertical" Margin="8,10,8,8">
-                        <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
-                            <TextBlock Text="Rule Name:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="{Binding AutoConfirmRuleName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="180" Margin="0,0,12,0" />
+                <TabItem>
+                    <TabItem.Header>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <ui:SymbolIcon Symbol="ShieldCheckmark24" Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,6,0" />
+                            <TextBlock Text="Safe Auto Confirm" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </TabItem.Header>
+                    <StackPanel Orientation="Vertical" Margin="4,8,4,8">
+                        <!-- Row 1: Rule & Target Groups -->
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" MinWidth="260" />
+                                <ColumnDefinition Width="*" MinWidth="240" />
+                            </Grid.ColumnDefinitions>
 
-                            <TextBlock Text="Process:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="{Binding AutoConfirmProcess, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="0,0,12,0" />
+                            <!-- Rule Group -->
+                            <Border Grid.Column="0" Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,8,0">
+                                <StackPanel Orientation="Vertical">
+                                    <TextBlock Text="Rule" FontWeight="SemiBold" FontSize="12"
+                                               Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Rule name:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                        <ui:TextBox Grid.Column="1" Text="{Binding AutoConfirmRuleName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                    HorizontalAlignment="Stretch" MinWidth="180" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
 
-                            <TextBlock Text="Prompt:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="{Binding AutoConfirmPrompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="150" Margin="0,0,12,0" />
+                            <!-- Target Group -->
+                            <Border Grid.Column="1" Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="8,0,0,0">
+                                <StackPanel Orientation="Vertical">
+                                    <TextBlock Text="Target" FontWeight="SemiBold" FontSize="12"
+                                               Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Process:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                        <ui:TextBox Grid.Column="1" Text="{Binding AutoConfirmProcess, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                    HorizontalAlignment="Stretch" MinWidth="160" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
 
-                            <TextBlock Text="Selected option:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="{Binding AutoConfirmSelectedOption, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="140" Margin="0,0,12,0" />
-                        </WrapPanel>
+                        <!-- Row 2: Detection Group -->
+                        <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,0,10">
+                            <StackPanel Orientation="Vertical">
+                                <TextBlock Text="Detection" FontWeight="SemiBold" FontSize="12"
+                                           Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Prompt:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="{Binding AutoConfirmPrompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="220" Margin="0,0,20,0" />
 
-                        <WrapPanel Orientation="Horizontal">
-                            <TextBlock Text="Allowed command:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="{Binding AutoConfirmAllowedCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="240" Margin="0,0,12,0" />
+                                    <TextBlock Text="Selected option:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="{Binding AutoConfirmSelectedOption, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="200" Margin="0,0,10,0" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
 
-                            <TextBlock Text="Match:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:TextBox Text="Exact" IsReadOnly="True" Width="70" Margin="0,0,12,0" />
+                        <!-- Row 3: Approval Group -->
+                        <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,0,10">
+                            <StackPanel Orientation="Vertical">
+                                <TextBlock Text="Approval" FontWeight="SemiBold" FontSize="12"
+                                           Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Allowed command:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="{Binding AutoConfirmAllowedCommand, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                Width="320" Margin="0,0,20,0" />
 
-                            <TextBlock Text="Mode:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ComboBox ItemsSource="{Binding AvailableExecutionModes}"
-                                      SelectedItem="{Binding AutoConfirmExecutionMode, Mode=TwoWay}"
-                                      Width="115"
-                                      Margin="0,0,12,0" />
+                                    <TextBlock Text="Match:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:TextBox Text="Exact" IsReadOnly="True" Width="80" Margin="0,0,10,0" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
 
-                            <TextBlock Text="Poll:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="75" Margin="0,0,4,0" />
-                            <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        <!-- Row 4: Execution Group -->
+                        <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1" CornerRadius="6" Padding="12,8">
+                            <StackPanel Orientation="Vertical">
+                                <TextBlock Text="Execution" FontWeight="SemiBold" FontSize="12"
+                                           Foreground="{DynamicResource AccentFillColorDefaultBrush}" Margin="0,0,0,6" />
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="Mode:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ComboBox ItemsSource="{Binding AvailableExecutionModes}"
+                                              SelectedItem="{Binding AutoConfirmExecutionMode, Mode=TwoWay}"
+                                              Width="150"
+                                              Margin="0,0,20,0" />
 
-                            <TextBlock Text="Timeout:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
-                            <ui:NumberBox Value="{Binding AutoConfirmTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="85" Margin="0,0,4,0" />
-                            <TextBlock Text="ms" VerticalAlignment="Center" Margin="0,0,14,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                    <TextBlock Text="Poll interval:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="85" Margin="0,0,4,0" />
+                                    <TextBlock Text="{Binding AutoConfirmPollIntervalDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,20,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
 
-                            <ui:Button Content="+ Add AutoConfirm"
-                                       Appearance="Primary"
-                                       Command="{Binding AddSafeAutoConfirmActionCommand}" />
-                        </WrapPanel>
+                                    <TextBlock Text="Timeout:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
+                                    <ui:NumberBox Value="{Binding AutoConfirmTimeoutMs, Mode=TwoWay}" Minimum="100" Maximum="300000" Width="95" Margin="0,0,4,0" />
+                                    <TextBlock Text="{Binding AutoConfirmTimeoutDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,24,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
+
+                                    <ui:Button Content="+ Add AutoConfirm Action"
+                                               Appearance="Primary"
+                                               FontWeight="SemiBold"
+                                               Command="{Binding AddSafeAutoConfirmActionCommand}" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
                 </TabItem>
             </TabControl>
@@ -211,7 +290,7 @@
                                         <ColumnDefinition Width="38" />
                                         <ColumnDefinition Width="120" />
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="100" />
+                                        <ColumnDefinition Width="Auto" MinWidth="110" />
                                         <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
 
@@ -247,7 +326,9 @@
                                     <Border Grid.Column="3"
                                             Background="{DynamicResource SubtleFillColorSecondaryBrush}"
                                             CornerRadius="4"
-                                            Padding="6,2"
+                                            Padding="8,3"
+                                            Margin="4,0,8,0"
+                                            ToolTip="{Binding Status}"
                                             HorizontalAlignment="Left"
                                             VerticalAlignment="Center">
                                         <TextBlock Text="{Binding Status}"

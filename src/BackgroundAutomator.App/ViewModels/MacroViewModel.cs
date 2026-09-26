@@ -114,6 +114,22 @@ public sealed partial class MacroViewModel : ObservableObject
     [ObservableProperty]
     private int _autoConfirmTimeoutMs = 60000;
 
+    partial void OnAutoConfirmPollIntervalMsChanged(int value)
+    {
+        OnPropertyChanged(nameof(AutoConfirmPollIntervalDisplay));
+    }
+
+    partial void OnAutoConfirmTimeoutMsChanged(int value)
+    {
+        OnPropertyChanged(nameof(AutoConfirmTimeoutDisplay));
+    }
+
+    public string AutoConfirmPollIntervalDisplay => $"{AutoConfirmPollIntervalMs} ms";
+
+    public string AutoConfirmTimeoutDisplay => AutoConfirmTimeoutMs >= 1000 && AutoConfirmTimeoutMs % 1000 == 0
+        ? $"{AutoConfirmTimeoutMs / 1000} sec"
+        : $"{AutoConfirmTimeoutMs / 1000.0:0.#} sec";
+
     public MacroViewModel(
         MacroRunner macroRunner,
         BackgroundClickerEngine clicker,
@@ -200,6 +216,19 @@ public sealed partial class MacroViewModel : ObservableObject
             });
         };
 
+        _macroRunner.ActionProgress += (index, action, progress) =>
+        {
+            Application.Current?.Dispatcher?.InvokeAsync(() =>
+            {
+                StatusText = $"State: RUNNING | Action [{index + 1}/{Actions.Count}]: {action.Name} ({progress})";
+                if (index >= 0 && index < Actions.Count)
+                {
+                    string color = progress.StartsWith("Blocked", StringComparison.OrdinalIgnoreCase) ? "#D83B01" : "#0078D4";
+                    Actions[index].SetStatus(progress, color);
+                }
+            });
+        };
+
         _macroRunner.ActionCompleted += (index, action, result) =>
         {
             Application.Current?.Dispatcher?.InvokeAsync(() =>
@@ -207,7 +236,12 @@ public sealed partial class MacroViewModel : ObservableObject
                 if (index >= 0 && index < Actions.Count)
                 {
                     string color = result.IsSuccess ? "#107C10" : "#E81123";
-                    Actions[index].SetStatus(result.Status.ToString(), color);
+                    string statusDisplay = result.Status.ToString();
+                    if (result.Status == MacroActionStatus.Timeout && !string.IsNullOrWhiteSpace(result.BlockerReason))
+                    {
+                        statusDisplay = $"Timeout — {result.BlockerReason}";
+                    }
+                    Actions[index].SetStatus(statusDisplay, color);
                 }
             });
         };
@@ -217,7 +251,12 @@ public sealed partial class MacroViewModel : ObservableObject
             Application.Current?.Dispatcher?.InvokeAsync(() =>
             {
                 string color = result.IsSuccess ? "#107C10" : "#E81123";
-                StatusText = $"Finished: {result.FinalStatus} ({result.CompletedActionsCount}/{result.TotalActionsCount} in {result.ElapsedTime.TotalMilliseconds:F0}ms)";
+                string statusDesc = result.FinalStatus.ToString();
+                if (result.FinalStatus == MacroActionStatus.Timeout && !string.IsNullOrWhiteSpace(result.BlockerReason))
+                {
+                    statusDesc = $"Timeout ({result.BlockerReason})";
+                }
+                StatusText = $"Finished: {statusDesc} ({result.CompletedActionsCount}/{result.TotalActionsCount} in {result.ElapsedTime.TotalMilliseconds:F0}ms)";
                 StatusColor = color;
                 _onMacroStateChanged(MacroRunnerState.Idle, StatusText);
             });

@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using BackgroundAutomator.Core.Logging;
 
 namespace BackgroundAutomator.Core.Macro;
@@ -36,6 +36,7 @@ public sealed class MacroRunner : IDisposable
 
     public event Action<MacroRunnerState>? StateChanged;
     public event Action<int, IMacroAction>? ActionStarting;
+    public event Action<int, IMacroAction, string>? ActionProgress;
     public event Action<int, IMacroAction, MacroActionResult>? ActionCompleted;
     public event Action<MacroExecutionResult>? ExecutionCompleted;
 
@@ -99,6 +100,9 @@ public sealed class MacroRunner : IDisposable
                 ActionStarting?.Invoke(i, currentAction);
                 _logger?.Debug($"MacroRunner executing action [{i + 1}/{actions.Count}]: {currentAction.DisplayString}");
 
+                int actionIndex = i;
+                context.ProgressCallback = progress => ActionProgress?.Invoke(actionIndex, currentAction, progress);
+
                 try
                 {
                     lastResult = await currentAction.ExecuteAsync(context, token);
@@ -111,6 +115,10 @@ public sealed class MacroRunner : IDisposable
                 {
                     _logger?.Error($"Macro action {currentAction.Name} threw unhandled exception: {ex.Message}");
                     lastResult = MacroActionResult.ClickFailed($"Unhandled exception: {ex.Message}");
+                }
+                finally
+                {
+                    context.ProgressCallback = null;
                 }
 
                 ActionCompleted?.Invoke(i, currentAction, lastResult);
@@ -143,7 +151,8 @@ public sealed class MacroRunner : IDisposable
             CompletedActionsCount: completedCount,
             TotalActionsCount: actions.Count,
             ElapsedTime: sw.Elapsed,
-            Message: lastResult.Message);
+            Message: lastResult.Message,
+            BlockerReason: lastResult.BlockerReason);
 
         _logger?.Info($"MacroRunner finished: Status={executionResult.FinalStatus}, Completed={completedCount}/{actions.Count}, Time={sw.ElapsedMilliseconds}ms");
         ExecutionCompleted?.Invoke(executionResult);

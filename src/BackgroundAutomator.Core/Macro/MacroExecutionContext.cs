@@ -22,6 +22,9 @@ public sealed class MacroExecutionContext
     public Security.ProcessElevationService ElevationService { get; }
     public IAppLogger? Logger { get; }
     public IntPtr TargetHwnd { get; set; }
+    public Action<string>? ProgressCallback { get; set; }
+
+    public void ReportProgress(string progress) => ProgressCallback?.Invoke(progress);
 
     public MacroExecutionContext(
         IBackgroundClicker clicker,

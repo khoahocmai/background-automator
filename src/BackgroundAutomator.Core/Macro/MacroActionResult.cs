@@ -3,7 +3,10 @@ namespace BackgroundAutomator.Core.Macro;
 /// <summary>
 /// Detailed result returned from the execution of an <see cref="IMacroAction"/>.
 /// </summary>
-public sealed record MacroActionResult(MacroActionStatus Status, string? Message = null)
+public sealed record MacroActionResult(
+    MacroActionStatus Status,
+    string? Message = null,
+    string? BlockerReason = null)
 {
     public bool IsSuccess => Status == MacroActionStatus.Success;
 
@@ -16,8 +19,10 @@ public sealed record MacroActionResult(MacroActionStatus Status, string? Message
     public static MacroActionResult TargetUnavailable(string message = "Target window is invalid or unavailable.") =>
         new(MacroActionStatus.TargetUnavailable, message);
 
-    public static MacroActionResult Timeout(string message = "Operation timed out before the condition was met.") =>
-        new(MacroActionStatus.Timeout, message);
+    public static MacroActionResult Timeout(
+        string message = "Operation timed out before the condition was met.",
+        string? blockerReason = null) =>
+        new(MacroActionStatus.Timeout, message, blockerReason);
 
     public static MacroActionResult CaptureFailed(string message = "Failed to capture window client area.") =>
         new(MacroActionStatus.CaptureFailed, message);

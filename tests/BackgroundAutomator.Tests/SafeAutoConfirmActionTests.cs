@@ -707,4 +707,72 @@ Run this command?
         Assert.True(result.IsSuccess);
         Assert.Equal(MacroActionStatus.Success, result.Status);
     }
+
+    [Fact]
+    public async Task Polling_Reports_Live_Blocker_And_Preserves_Blocker_On_Timeout()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        // Prompt with 2 conflicting candidates detected before prompt
+        string ambiguousPrompt = @"
+git pull
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(ambiguousPrompt, ambiguousPrompt)));
+
+        var (context, _, _, _) = CreateTestContext(detector, targetHwnd);
+        var reportedStatuses = new List<string>();
+        context.ProgressCallback = status => reportedStatuses.Add(status);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            timeout: TimeSpan.FromMilliseconds(80),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Timeout, result.Status);
+        Assert.Equal("AmbiguousPrompt", result.BlockerReason);
+        Assert.Contains("Last blocker: AmbiguousPrompt", result.Message);
+        Assert.Contains(reportedStatuses, s => s.StartsWith("Waiting — Ambiguous command"));
+    }
+
+    [Fact]
+    public async Task Polling_Reports_CommandNotAllowed_And_Preserves_Blocker_On_Timeout()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string disallowedPrompt = @"
+rm -rf /some/dir
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(disallowedPrompt, disallowedPrompt)));
+
+        var (context, _, _, _) = CreateTestContext(detector, targetHwnd);
+        var reportedStatuses = new List<string>();
+        context.ProgressCallback = status => reportedStatuses.Add(status);
+
+        var rule = CreateRule(); // Allowed: dotnet test BackgroundAutomator.sln
+        var action = new SafeAutoConfirmAction(
+            rule,
+            timeout: TimeSpan.FromMilliseconds(80),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Timeout, result.Status);
+        Assert.Equal("CommandNotAllowed", result.BlockerReason);
+        Assert.Contains("Last blocker: CommandNotAllowed", result.Message);
+        Assert.Contains("Blocked — Command not allowed", reportedStatuses);
+    }
 }

@@ -28,6 +28,10 @@ public sealed class CommandPromptParser : ICommandPromptParser
         @"^```(?:sh|bash|powershell|cmd|ps1)?$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex PermissionHeaderRegex = new(
+        @"^(?:[●\*\-]\s*)?(?:\*\*)?Requesting permission for:?(?:\*\*)?\s*(.*)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public CommandExtractionResult Parse(
         string? rawVisibleText,
         string expectedPrompt = "Run this command?",
@@ -111,10 +115,102 @@ public sealed class CommandPromptParser : ICommandPromptParser
                 selectedOptionText: selectedOptionText);
         }
 
-        // 3. Extract candidate commands associated with this prompt
-        var candidates = new List<string>();
+        // 3. Authoritative Extraction: Check for explicit "Requesting permission for:" block
+        // In Antigravity and modern LLM CLI interfaces, the active prompt has the authoritative structure:
+        //   Requesting permission for:
+        //   <command block>
+        //   Run this command?
+        int prevPromptIdx = -1;
+        for (int i = promptIdx - 1; i >= 0; i--)
+        {
+            if (lines[i].Contains(expectedPrompt, StringComparison.OrdinalIgnoreCase))
+            {
+                prevPromptIdx = i;
+                break;
+            }
+        }
 
-        // Check Zone A: between prompt and options
+        // Safety: verify no misplaced permission headers below prompt
+        for (int i = promptIdx + 1; i < optionIdx; i++)
+        {
+            if (PermissionHeaderRegex.IsMatch(lines[i]))
+            {
+                return CommandExtractionResult.Ambiguous(
+                    "Malformed prompt boundaries: 'Requesting permission for:' marker detected below prompt.",
+                    promptText,
+                    selectedOptionText);
+            }
+        }
+
+        var permIndices = new List<(int Index, string InlineText)>();
+        for (int i = prevPromptIdx + 1; i < promptIdx; i++)
+        {
+            var match = PermissionHeaderRegex.Match(lines[i]);
+            if (match.Success)
+            {
+                permIndices.Add((i, match.Groups[1].Value.Trim()));
+            }
+        }
+
+        if (permIndices.Count > 1)
+        {
+            return CommandExtractionResult.Ambiguous(
+                $"Malformed prompt boundaries: multiple 'Requesting permission for:' markers ({permIndices.Count}) detected before prompt.",
+                promptText,
+                selectedOptionText);
+        }
+
+        if (permIndices.Count == 1)
+        {
+            var (permIdx, inlineCmd) = permIndices[0];
+            var sectionLines = new List<(string Clean, int OriginalIndex)>();
+
+            if (!string.IsNullOrEmpty(inlineCmd))
+            {
+                sectionLines.Add((inlineCmd, permIdx));
+            }
+
+            for (int i = permIdx + 1; i < promptIdx; i++)
+            {
+                string line = lines[i];
+                if (string.IsNullOrWhiteSpace(line) || IsSeparatorLine(line) || IsOptionLine(line))
+                    continue;
+
+                sectionLines.Add((line, i));
+            }
+
+            var permCandidates = ExtractCandidatesFromPermissionSection(sectionLines, rawLines, out string? permParseError);
+
+            if (!string.IsNullOrEmpty(permParseError))
+            {
+                return CommandExtractionResult.Ambiguous(
+                    $"Permission section could not be parsed reliably: {permParseError}",
+                    promptText,
+                    selectedOptionText);
+            }
+
+            if (permCandidates.Count == 0)
+            {
+                return CommandExtractionResult.Failed(
+                    "No command candidate found inside permission section.",
+                    isPromptVisible: true,
+                    isOptionSelected: true,
+                    promptText: promptText,
+                    selectedOptionText: selectedOptionText);
+            }
+
+            if (permCandidates.Count > 1)
+            {
+                return CommandExtractionResult.Ambiguous(
+                    $"Multiple conflicting command candidates ({permCandidates.Count}) detected inside permission section.",
+                    promptText,
+                    selectedOptionText);
+            }
+
+            return CommandExtractionResult.Successful(permCandidates[0], promptText, selectedOptionText!);
+        }
+
+        // 4. Fallback Extraction: Check Zone A (between prompt and options)
         if (optionIdx > promptIdx + 1)
         {
             var zoneALines = new List<string>();
@@ -189,6 +285,156 @@ public sealed class CommandPromptParser : ICommandPromptParser
             isOptionSelected: true,
             promptText: promptText,
             selectedOptionText: selectedOptionText);
+    }
+
+    private static List<string> ExtractCandidatesFromPermissionSection(
+        List<(string Clean, int OriginalIndex)> sectionLines,
+        string[] rawLines,
+        out string? parseError)
+    {
+        parseError = null;
+        var candidates = new List<string>();
+        int i = 0;
+
+        while (i < sectionLines.Count)
+        {
+            var (line, origIdx) = sectionLines[i];
+
+            // 1. Fenced code block (``` ... ```)
+            if (FencedBlockStartRegex.IsMatch(line) || line.StartsWith("```"))
+            {
+                int endIdx = -1;
+                for (int j = i + 1; j < sectionLines.Count; j++)
+                {
+                    if (sectionLines[j].Clean.EndsWith("```") || sectionLines[j].Clean == "```")
+                    {
+                        endIdx = j;
+                        break;
+                    }
+                }
+
+                if (endIdx < 0)
+                {
+                    parseError = "Unclosed fenced code block in permission section.";
+                    return candidates;
+                }
+
+                var blockContent = new List<string>();
+                for (int k = i + 1; k < endIdx; k++)
+                {
+                    blockContent.Add(sectionLines[k].Clean);
+                }
+                string fencedCmd = string.Join(" ", blockContent).Trim();
+                if (!string.IsNullOrEmpty(fencedCmd))
+                {
+                    candidates.Add(fencedCmd);
+                }
+                i = endIdx + 1;
+                continue;
+            }
+
+            // 2. Tool wrapper: ● Bash(...) or Bash(...)
+            var singleMatch = ToolWrapperRegex.Match(line);
+            if (singleMatch.Success && singleMatch.Groups.Count > 1)
+            {
+                string cmd = CleanCommand(singleMatch.Groups[1].Value);
+                if (!string.IsNullOrEmpty(cmd))
+                {
+                    candidates.Add(cmd);
+                }
+                i++;
+                continue;
+            }
+
+            // 3. Multiline tool wrapper: starts with Bash( and closes on a later line with )
+            if (ToolWrapperStartRegex.IsMatch(line))
+            {
+                int closeIdx = -1;
+                for (int j = i + 1; j < sectionLines.Count; j++)
+                {
+                    if (sectionLines[j].Clean.Contains(")"))
+                    {
+                        closeIdx = j;
+                        break;
+                    }
+                }
+
+                if (closeIdx < 0)
+                {
+                    parseError = "Unclosed tool wrapper in permission section.";
+                    return candidates;
+                }
+
+                int openParen = line.IndexOf('(');
+                string firstPart = openParen >= 0 ? line.Substring(openParen + 1).Trim() : string.Empty;
+                var toolLines = new List<string>();
+                if (!string.IsNullOrEmpty(firstPart)) toolLines.Add(firstPart);
+
+                for (int k = i + 1; k < closeIdx; k++)
+                {
+                    toolLines.Add(sectionLines[k].Clean);
+                }
+
+                string closeLine = sectionLines[closeIdx].Clean;
+                int closeParen = closeLine.LastIndexOf(')');
+                string lastPart = closeParen > 0 ? closeLine.Substring(0, closeParen).Trim() : string.Empty;
+                if (!string.IsNullOrEmpty(lastPart)) toolLines.Add(lastPart);
+
+                string multiCmd = CleanCommand(string.Join(" ", toolLines));
+                if (!string.IsNullOrEmpty(multiCmd))
+                {
+                    candidates.Add(multiCmd);
+                }
+                i = closeIdx + 1;
+                continue;
+            }
+
+            // 4. Command prefix: Command: <cmd>
+            var prefixMatch = CommandPrefixRegex.Match(line);
+            if (prefixMatch.Success && prefixMatch.Groups.Count > 1)
+            {
+                string cmd = CleanCommand(prefixMatch.Groups[1].Value);
+                if (!string.IsNullOrEmpty(cmd))
+                {
+                    candidates.Add(cmd);
+                }
+                i++;
+                continue;
+            }
+
+            // 5. Raw command line (with potential continuation lines)
+            var rawCmdLines = new List<string> { line };
+            while (i + 1 < sectionLines.Count)
+            {
+                string prevLine = sectionLines[i].Clean;
+                var (nextLine, nextOrig) = sectionLines[i + 1];
+
+                bool hasExplicitContinuation = prevLine.EndsWith("|") || prevLine.EndsWith("`") || prevLine.EndsWith("\\");
+                string rawNext = nextOrig < rawLines.Length ? rawLines[nextOrig] : string.Empty;
+                bool isIndented = rawNext.StartsWith("  ") || rawNext.StartsWith("\t");
+
+                if (hasExplicitContinuation || isIndented)
+                {
+                    rawCmdLines.Add(nextLine);
+                    i++;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            string joinedRaw = JoinContinuationLines(rawCmdLines);
+            string cleaned = CleanCommand(joinedRaw);
+            if (!string.IsNullOrEmpty(cleaned))
+            {
+                candidates.Add(cleaned);
+            }
+
+            i++;
+        }
+
+        return candidates;
     }
 
     private static List<string> ExtractCandidatesFromZoneB(

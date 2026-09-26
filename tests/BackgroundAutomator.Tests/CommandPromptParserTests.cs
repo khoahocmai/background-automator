@@ -301,4 +301,167 @@ Run this command?
         var resultEmpty = _parser.Parse("   ");
         Assert.False(resultEmpty.Success);
     }
+
+    [Fact]
+    public void Parse_Extracts_Antigravity_Real_Format_Authoritative_Permission_Block()
+    {
+        string rawText = @"
+● Bash(Get-Date)
+
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+  2. Yes, and always allow in this conversation ...
+  3. Yes, and always allow ...
+  4. No, cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal("Get-Date", result.CommandText);
+        Assert.Equal("Run this command?", result.PromptText);
+        Assert.Equal("> 1. Yes, run command", result.SelectedOptionText);
+    }
+
+    [Fact]
+    public void Parse_Ignores_Old_History_And_Competing_Candidates_Before_Permission_Block()
+    {
+        string rawText = @"
+● Bash(git fetch origin)
+● Bash(git status)
+● Bash(dotnet build)
+Some random terminal output
+Command: echo test
+
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+  2. Cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal("Get-Date", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Extracts_Multiline_Backtick_Command_In_Permission_Block()
+    {
+        string rawText = @"
+Requesting permission for:
+Get-ChildItem `
+  -Path D:\workspace `
+  -Recurse
+
+Run this command?
+> 1. Yes, run command
+  2. No, cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(@"Get-ChildItem -Path D:\workspace -Recurse", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Extracts_Multiline_Pipe_Command_In_Permission_Block()
+    {
+        string rawText = @"
+Requesting permission for:
+Get-ChildItem ""D:\workspace"" |
+  Where-Object { $_.Name -like ""*.json"" }
+
+Run this command?
+> 1. Yes, run command
+  2. No, cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.True(result.Success);
+        Assert.False(result.IsAmbiguous);
+        Assert.Equal(@"Get-ChildItem ""D:\workspace"" | Where-Object { $_.Name -like ""*.json"" }", result.CommandText);
+    }
+
+    [Fact]
+    public void Parse_Fails_Closed_When_Permission_Block_Is_Empty()
+    {
+        string rawText = @"
+Requesting permission for:
+
+Run this command?
+> 1. Yes, run command
+  2. No, cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.Null(result.CommandText);
+        Assert.True(result.IsApprovalPromptVisible);
+        Assert.True(result.IsYesOptionSelected);
+        Assert.Contains("No command candidate found inside permission section", result.FailureReason);
+    }
+
+    [Fact]
+    public void Parse_Returns_Ambiguous_When_Multiple_Independent_Commands_Inside_Permission_Block()
+    {
+        string rawText = @"
+Requesting permission for:
+git status
+git diff
+
+Run this command?
+> 1. Yes, run command
+  2. No, cancel
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.True(result.IsAmbiguous);
+        Assert.Null(result.CommandText);
+        Assert.Contains("Multiple conflicting command candidates", result.AmbiguityReason);
+    }
+
+    [Fact]
+    public void Parse_Returns_Ambiguous_When_Multiple_Permission_Headers_Precede_Prompt()
+    {
+        string rawText = @"
+Requesting permission for:
+Get-Date
+Requesting permission for:
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.True(result.IsAmbiguous);
+        Assert.Contains("Malformed prompt boundaries", result.AmbiguityReason);
+    }
+
+    [Fact]
+    public void Parse_Fails_When_Unclosed_Fenced_Block_In_Permission_Section()
+    {
+        string rawText = @"
+Requesting permission for:
+```powershell
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        var result = _parser.Parse(rawText);
+
+        Assert.False(result.Success);
+        Assert.True(result.IsAmbiguous);
+        Assert.Contains("could not be parsed reliably", result.AmbiguityReason);
+    }
 }

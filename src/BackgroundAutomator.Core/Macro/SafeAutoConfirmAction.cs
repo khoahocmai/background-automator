@@ -107,6 +107,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
         var sw = Stopwatch.StartNew();
         string? lastBlockedReason = null;
+        ApprovalBlockReason? lastBlockReason = null;
 
         while (true)
         {
@@ -176,14 +177,21 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 }
                 else
                 {
-                    // Bounded state-change logging for blocked reasons
+                    lastBlockReason = decision.BlockReason;
                     string currentReason = $"{decision.BlockReason}: {decision.Explanation}";
                     if (currentReason != lastBlockedReason)
                     {
                         lastBlockedReason = currentReason;
                         context.Logger?.Info($"[AutoConfirm] BLOCKED — {currentReason}");
                     }
+
+                    string liveStatus = FormatLiveBlocker(decision.BlockReason, decision.Explanation, extraction);
+                    context.ReportProgress(liveStatus);
                 }
+            }
+            else
+            {
+                context.ReportProgress("Waiting — Prompt not visible");
             }
 
             if (sw.Elapsed >= Timeout)
@@ -208,8 +216,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             }
         }
 
-        context.Logger?.Warning($"[AutoConfirm] Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms.");
-        return MacroActionResult.Timeout($"Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms.");
+        string timeoutMsg = !string.IsNullOrEmpty(lastBlockedReason)
+            ? $"Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms. Last blocker: {lastBlockedReason}"
+            : $"Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms.";
+
+        context.Logger?.Warning($"[AutoConfirm] {timeoutMsg}");
+        return MacroActionResult.Timeout(timeoutMsg, lastBlockReason?.ToString());
     }
 
     private async Task<MacroActionResult> ExecuteConfirmPulseAsync(
@@ -425,5 +437,35 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 }
             }
         }
+    }
+
+    private static string FormatLiveBlocker(
+        ApprovalBlockReason? reason,
+        string? explanation,
+        CommandExtractionResult extraction)
+    {
+        return reason switch
+        {
+            ApprovalBlockReason.AmbiguousPrompt =>
+                FormatAmbiguousStatus(extraction.AmbiguityReason ?? explanation ?? string.Empty),
+            ApprovalBlockReason.CommandNotAllowed => "Blocked — Command not allowed",
+            ApprovalBlockReason.OptionNotSelected => "Waiting — Option not selected",
+            ApprovalBlockReason.CommandNotFound => "Waiting — Command not found",
+            ApprovalBlockReason.PromptNotVisible => "Waiting — Prompt not visible",
+            ApprovalBlockReason.TargetMismatch => "Blocked — Target mismatch",
+            ApprovalBlockReason.TargetNotInteractable => "Blocked — Target not interactable",
+            ApprovalBlockReason.ForegroundActivationFailed => "Blocked — Activation failed",
+            _ => $"Blocked — {reason?.ToString() ?? "Unknown"}"
+        };
+    }
+
+    private static string FormatAmbiguousStatus(string reason)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(reason, @"conflicting command candidates \((\d+)\)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (match.Success)
+        {
+            return $"Waiting — Ambiguous command ({match.Groups[1].Value} candidates)";
+        }
+        return "Waiting — Ambiguous command";
     }
 }
