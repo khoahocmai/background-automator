@@ -261,6 +261,40 @@
                             </StackPanel>
                         </Border>
 
+                        <!-- Danger Zone: Approval Policy Selection -->
+                        <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
+                                BorderBrush="#E81123"
+                                BorderThickness="1.5" CornerRadius="6" Padding="12,10" Margin="0,0,0,10">
+                            <StackPanel Orientation="Vertical">
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                    <ui:SymbolIcon Symbol="Warning24" Foreground="#E81123" Margin="0,0,6,0" />
+                                    <TextBlock Text="Danger Zone — Approval Policy" FontWeight="SemiBold" FontSize="12"
+                                               Foreground="#E81123" VerticalAlignment="Center" />
+                                </StackPanel>
+
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,6">
+                                    <RadioButton Content="Exact Rules (Recommended)"
+                                                 IsChecked="{Binding IsExactRulesMode, Mode=TwoWay}"
+                                                 FontWeight="SemiBold" Margin="0,0,24,0" />
+                                    <RadioButton Content="FOOL MODE"
+                                                 IsChecked="{Binding IsFoolMode, Mode=TwoWay}"
+                                                 FontWeight="Bold" Foreground="#E81123" />
+                                </WrapPanel>
+
+                                <!-- FOOL MODE Warning Banner -->
+                                <Border Visibility="{Binding IsFoolMode, Converter={StaticResource BoolToVis}}"
+                                        Background="#22E81123" BorderBrush="#88E81123" BorderThickness="1"
+                                        CornerRadius="4" Padding="10,8" Margin="0,4,0,0">
+                                    <StackPanel Orientation="Vertical">
+                                        <TextBlock Text="⚠ DANGER: Any command presented by the detected approval prompt may be executed automatically."
+                                                   FontWeight="SemiBold" Foreground="#E81123" TextWrapping="Wrap" />
+                                        <TextBlock Text="Auto approve any detected command. Command allowlist filtering is completely bypassed for this action. Structural prompt validation, target identity, UIPI checks, and selected-option verification remain strictly enforced."
+                                                   FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
                         <!-- Row 3: Approval Group (Multi-Rule Rule Set) -->
                         <Border Background="{DynamicResource CardBackgroundSecondaryBrush}"
                                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
@@ -274,11 +308,20 @@
                                     <TextBlock Grid.Column="0" Text="Approval Rule Set (Exact Match Only)" FontWeight="SemiBold" FontSize="12"
                                                Foreground="{DynamicResource AccentFillColorDefaultBrush}" VerticalAlignment="Center" />
                                     <ui:Button Grid.Column="1" Content="Clear Rules" Padding="6,2" FontSize="11"
+                                               IsEnabled="{Binding IsExactRulesMode}"
                                                Command="{Binding ClearApprovalRulesCommand}" />
                                 </Grid>
 
-                                <!-- Add Rule Row -->
-                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
+                                <!-- Notice when FOOL MODE is active -->
+                                <Border Visibility="{Binding IsFoolMode, Converter={StaticResource BoolToVis}}"
+                                        Background="{DynamicResource SubtleFillColorSecondaryBrush}" CornerRadius="4" Padding="8,4" Margin="0,0,0,8">
+                                    <TextBlock Text="ℹ Rule matching is bypassed while FOOL MODE is active. Existing rules remain saved."
+                                               FontSize="11" FontStyle="Italic" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                </Border>
+
+                                <StackPanel Orientation="Vertical" IsEnabled="{Binding IsExactRulesMode}">
+                                    <!-- Add Rule Row -->
+                                    <WrapPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,8">
                                     <TextBlock Text="Rule name:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
                                     <ui:TextBox Text="{Binding NewRuleName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                 Width="140" Margin="0,0,10,0" PlaceholderText="e.g. Test Suite" />
@@ -334,6 +377,7 @@
                                     <TextBlock Text="(Used when rules list above is empty)" VerticalAlignment="Center" FontSize="11"
                                                Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                                 </WrapPanel>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 

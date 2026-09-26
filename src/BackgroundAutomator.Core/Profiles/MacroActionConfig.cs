@@ -34,6 +34,7 @@ public sealed class MacroActionConfig
     public string? DeliveryMode { get; set; }
     public string? WaitMode { get; set; }
     public string? FocusBehavior { get; set; }
+    public string? ApprovalPolicyMode { get; set; }
 
     // SafeAutoConfirm multi-rule set property
     public ApprovalRuleSetConfig? RuleSet { get; set; }
@@ -96,6 +97,7 @@ public sealed class MacroActionConfig
                 DeliveryMode = saca.DeliveryMode.ToString(),
                 WaitMode = saca.WaitMode.ToString(),
                 FocusBehavior = saca.FocusBehavior.ToString(),
+                ApprovalPolicyMode = saca.PolicyMode.ToString(),
                 TimeoutMs = (int)saca.Timeout.TotalMilliseconds,
                 PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds,
                 RuleSet = new ApprovalRuleSetConfig
@@ -195,7 +197,17 @@ public sealed class MacroActionConfig
             timeout: TimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutMs.Value) : null,
             pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null,
             waitMode: ParseWaitMode(WaitMode),
-            focusBehavior: ParseFocusBehavior(FocusBehavior));
+            focusBehavior: ParseFocusBehavior(FocusBehavior),
+            policyMode: ParseApprovalPolicyMode(ApprovalPolicyMode));
+    }
+
+    private static ApprovalPolicyMode ParseApprovalPolicyMode(string? mode)
+    {
+        if (Enum.TryParse<ApprovalPolicyMode>(mode, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return Approval.ApprovalPolicyMode.ExactRules;
     }
 
     private static FocusBehavior ParseFocusBehavior(string? behavior)

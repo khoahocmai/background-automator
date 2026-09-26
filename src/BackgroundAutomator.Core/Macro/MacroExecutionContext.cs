@@ -24,6 +24,12 @@ public sealed class MacroExecutionContext
     public IntPtr TargetHwnd { get; set; }
     public Action<string>? ProgressCallback { get; set; }
 
+    /// <summary>
+    /// Indicates whether unrestricted prompt approval ("FOOL MODE") was explicitly authorized
+    /// by the user for this runner session.
+    /// </summary>
+    public bool IsFoolModeAuthorized { get; set; }
+
     public void ReportProgress(string progress) => ProgressCallback?.Invoke(progress);
 
     public MacroExecutionContext(

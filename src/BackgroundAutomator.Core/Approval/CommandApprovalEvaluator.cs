@@ -13,19 +13,21 @@ public static class CommandApprovalEvaluator
     /// <param name="snapshot">Snapshot of current terminal prompt state.</param>
     /// <param name="actualProcessName">Actual process name of target window.</param>
     /// <param name="actualWindowClass">Actual window class name of target window.</param>
+    /// <param name="policyMode">Approval policy mode (ExactRules or FoolMode).</param>
     /// <returns>An <see cref="ApprovalDecision"/> indicating Allowed or Blocked with reason.</returns>
     public static ApprovalDecision Evaluate(
         CommandApprovalRule rule,
         CommandPromptSnapshot snapshot,
         string? actualProcessName = null,
-        string? actualWindowClass = null)
+        string? actualWindowClass = null,
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
     {
         if (rule == null)
             throw new ArgumentNullException(nameof(rule));
         if (snapshot == null)
             throw new ArgumentNullException(nameof(snapshot));
 
-        if (!rule.Enabled)
+        if (policyMode == ApprovalPolicyMode.ExactRules && !rule.Enabled)
         {
             return ApprovalDecision.Blocked(
                 ApprovalBlockReason.CommandNotAllowed,
@@ -81,6 +83,20 @@ public static class CommandApprovalEvaluator
                 $"Expected option '{rule.ExpectedSelectedOption}' is not currently selected.");
         }
 
+        // If in FOOL MODE, command allowlist matching is bypassed.
+        // Prompt structure, target identity, and selected option have all been verified.
+        if (policyMode == ApprovalPolicyMode.FoolMode)
+        {
+            string cmdDesc = !string.IsNullOrWhiteSpace(snapshot.CommandText)
+                ? snapshot.CommandText.Trim()
+                : "[Unknown/Unextracted]";
+
+            return ApprovalDecision.Allowed(
+                $"Unrestricted approval granted under FOOL MODE. Command: \"{cmdDesc}\"",
+                matchedRuleId: null,
+                matchedRuleName: "FOOL MODE");
+        }
+
         // 5. Command availability
         if (string.IsNullOrWhiteSpace(snapshot.CommandText))
         {
@@ -119,12 +135,14 @@ public static class CommandApprovalEvaluator
     /// <param name="snapshot">Snapshot of current terminal prompt state.</param>
     /// <param name="actualProcessName">Actual process name of target window.</param>
     /// <param name="actualWindowClass">Actual window class name of target window.</param>
+    /// <param name="policyMode">Approval policy mode (ExactRules or FoolMode).</param>
     /// <returns>An <see cref="ApprovalDecision"/> indicating Allowed or Blocked with reason.</returns>
     public static ApprovalDecision Evaluate(
         ApprovalRuleSet ruleSet,
         CommandPromptSnapshot snapshot,
         string? actualProcessName = null,
-        string? actualWindowClass = null)
+        string? actualWindowClass = null,
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
     {
         if (ruleSet == null)
             throw new ArgumentNullException(nameof(ruleSet));
@@ -178,6 +196,20 @@ public static class CommandApprovalEvaluator
             return ApprovalDecision.Blocked(
                 ApprovalBlockReason.OptionNotSelected,
                 $"Expected option '{ruleSet.ExpectedSelectedOption}' is not currently selected.");
+        }
+
+        // If in FOOL MODE, command allowlist matching is bypassed.
+        // Prompt structure, target identity, and selected option have all been verified.
+        if (policyMode == ApprovalPolicyMode.FoolMode)
+        {
+            string cmdDesc = !string.IsNullOrWhiteSpace(snapshot.CommandText)
+                ? snapshot.CommandText.Trim()
+                : "[Unknown/Unextracted]";
+
+            return ApprovalDecision.Allowed(
+                $"Unrestricted approval granted under FOOL MODE. Command: \"{cmdDesc}\"",
+                matchedRuleId: null,
+                matchedRuleName: "FOOL MODE");
         }
 
         // 5. Command availability

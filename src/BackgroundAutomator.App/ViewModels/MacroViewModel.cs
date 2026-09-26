@@ -12,6 +12,7 @@ using BackgroundAutomator.Core.Targeting;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Approval;
 using BackgroundAutomator.Core.Profiles;
+using BackgroundAutomator.App.Services;
 using BackgroundAutomator.Core.TextDetection;
 
 namespace BackgroundAutomator.App.ViewModels;
@@ -24,6 +25,8 @@ public sealed partial class MacroViewModel : ObservableObject
     private readonly IBackgroundKeyboard _keyboard;
     private readonly IAppLogger _logger;
     private readonly Action<MacroRunnerState, string> _onMacroStateChanged;
+    private readonly IDialogService _dialogService;
+    private readonly ITargetValidator _targetValidator;
 
     private WindowTarget? _currentTarget;
 
@@ -88,6 +91,44 @@ public sealed partial class MacroViewModel : ObservableObject
 
     [ObservableProperty]
     private FocusBehavior _autoConfirmFocusBehavior = FocusBehavior.FastPulse;
+
+    // Safe Auto Confirm Approval Policy (ExactRules vs FOOL MODE)
+    [ObservableProperty]
+    private ApprovalPolicyMode _autoConfirmPolicyMode = ApprovalPolicyMode.ExactRules;
+
+    public bool IsExactRulesMode
+    {
+        get => AutoConfirmPolicyMode == ApprovalPolicyMode.ExactRules;
+        set
+        {
+            if (value && AutoConfirmPolicyMode != ApprovalPolicyMode.ExactRules)
+            {
+                AutoConfirmPolicyMode = ApprovalPolicyMode.ExactRules;
+            }
+        }
+    }
+
+    public bool IsFoolMode
+    {
+        get => AutoConfirmPolicyMode == ApprovalPolicyMode.FoolMode;
+        set
+        {
+            if (value && AutoConfirmPolicyMode != ApprovalPolicyMode.FoolMode)
+            {
+                AutoConfirmPolicyMode = ApprovalPolicyMode.FoolMode;
+            }
+        }
+    }
+
+    partial void OnAutoConfirmPolicyModeChanged(ApprovalPolicyMode value)
+    {
+        OnPropertyChanged(nameof(IsExactRulesMode));
+        OnPropertyChanged(nameof(IsFoolMode));
+        IsDirty = true;
+    }
+
+    [ObservableProperty]
+    private bool _isFoolModeActive;
 
     // Macro Repeat Configuration
     public IReadOnlyList<MacroRepeatMode> AvailableRepeatModes { get; } = Enum.GetValues<MacroRepeatMode>();
@@ -222,6 +263,19 @@ public sealed partial class MacroViewModel : ObservableObject
         IBackgroundKeyboard keyboard,
         IAppLogger logger,
         Action<MacroRunnerState, string> onMacroStateChanged)
+        : this(macroRunner, clicker, captureService, keyboard, logger, onMacroStateChanged, new WpfDialogService(), new Win32TargetValidator())
+    {
+    }
+
+    public MacroViewModel(
+        MacroRunner macroRunner,
+        BackgroundClickerEngine clicker,
+        GdiWindowCaptureService captureService,
+        IBackgroundKeyboard keyboard,
+        IAppLogger logger,
+        Action<MacroRunnerState, string> onMacroStateChanged,
+        IDialogService dialogService,
+        ITargetValidator targetValidator)
     {
         _macroRunner = macroRunner;
         _clicker = clicker;
@@ -229,6 +283,8 @@ public sealed partial class MacroViewModel : ObservableObject
         _keyboard = keyboard ?? new BackgroundKeyboardEngine(logger);
         _logger = logger;
         _onMacroStateChanged = onMacroStateChanged;
+        _dialogService = dialogService ?? new WpfDialogService();
+        _targetValidator = targetValidator ?? new Win32TargetValidator();
 
         WireEvents();
     }
@@ -239,14 +295,14 @@ public sealed partial class MacroViewModel : ObservableObject
         GdiWindowCaptureService captureService,
         IAppLogger logger,
         Action<MacroRunnerState, string> onMacroStateChanged)
-        : this(macroRunner, clicker, captureService, new BackgroundKeyboardEngine(logger), logger, onMacroStateChanged)
+        : this(macroRunner, clicker, captureService, new BackgroundKeyboardEngine(logger), logger, onMacroStateChanged, new WpfDialogService(), new Win32TargetValidator())
     {
     }
 
     public void SetCurrentTarget(WindowTarget? target)
     {
         _currentTarget = target;
-        if (target != null && target.IsWindowValid())
+        if (target != null && _targetValidator.IsValid(target))
         {
             ActionX = Math.Clamp(target.ClientPoint.ClientX, 0, 9999);
             ActionY = Math.Clamp(target.ClientPoint.ClientY, 0, 9999);
@@ -265,8 +321,16 @@ public sealed partial class MacroViewModel : ObservableObject
                         IsRunning = true;
                         CanRun = false;
                         CanStop = true;
-                        StatusText = "State: RUNNING...";
-                        StatusColor = "#107C10";
+                        if (IsFoolModeActive)
+                        {
+                            StatusText = "State: RUNNING — FOOL MODE";
+                            StatusColor = "#E81123";
+                        }
+                        else
+                        {
+                            StatusText = "State: RUNNING...";
+                            StatusColor = "#107C10";
+                        }
                         break;
                     case MacroRunnerState.Stopping:
                         IsRunning = false;
@@ -279,6 +343,7 @@ public sealed partial class MacroViewModel : ObservableObject
                         IsRunning = false;
                         CanRun = true;
                         CanStop = false;
+                        IsFoolModeActive = false;
                         StatusText = $"State: IDLE | Actions: {Actions.Count}";
                         StatusColor = "#666666";
                         break;
@@ -379,6 +444,7 @@ public sealed partial class MacroViewModel : ObservableObject
         {
             Application.Current?.Dispatcher?.InvokeAsync(() =>
             {
+                IsFoolModeActive = false;
                 string color = result.IsSuccess ? "#107C10" : "#E81123";
                 string statusDesc = result.FinalStatus.ToString();
                 if (result.FinalStatus == MacroActionStatus.Timeout && !string.IsNullOrWhiteSpace(result.BlockerReason))
@@ -399,7 +465,7 @@ public sealed partial class MacroViewModel : ObservableObject
         string cmd = NewRuleCommand.Trim();
         if (string.IsNullOrWhiteSpace(cmd))
         {
-            MessageBox.Show("Please enter the command text to allow.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogService.ShowWarning("Invalid Command", "Please enter the command text to allow.");
             return;
         }
 
@@ -427,9 +493,9 @@ public sealed partial class MacroViewModel : ObservableObject
     [RelayCommand]
     public void UseTargetPoint()
     {
-        if (_currentTarget != null && _currentTarget.IsWindowValid())
+        if (_targetValidator.IsValid(_currentTarget))
         {
-            ActionX = Math.Clamp(_currentTarget.ClientPoint.ClientX, 0, 9999);
+            ActionX = Math.Clamp(_currentTarget!.ClientPoint.ClientX, 0, 9999);
             ActionY = Math.Clamp(_currentTarget.ClientPoint.ClientY, 0, 9999);
         }
     }
@@ -486,7 +552,7 @@ public sealed partial class MacroViewModel : ObservableObject
         }
         catch
         {
-            MessageBox.Show("Invalid hex color format. Use #RRGGBB (e.g. #00FF00)", "Invalid Color", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogService.ShowWarning("Invalid Color", "Invalid hex color format. Use #RRGGBB (e.g. #00FF00)");
             return;
         }
 
@@ -502,7 +568,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(WaitForTextExpected))
         {
-            MessageBox.Show("Please enter expected text to wait for.", "Invalid Text", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogService.ShowWarning("Invalid Text", "Please enter expected text to wait for.");
             return;
         }
 
@@ -523,7 +589,7 @@ public sealed partial class MacroViewModel : ObservableObject
     {
         if (string.IsNullOrWhiteSpace(AutoConfirmPrompt))
         {
-            MessageBox.Show("Please enter the expected prompt text.", "Invalid Prompt", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _dialogService.ShowWarning("Invalid Prompt", "Please enter the expected prompt text.");
             return;
         }
 
@@ -535,14 +601,8 @@ public sealed partial class MacroViewModel : ObservableObject
                 AutoConfirmPrompt.Trim(),
                 AutoConfirmSelectedOption?.Trim() ?? "Yes, run command")).ToList();
         }
-        else
+        else if (!string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
         {
-            if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
-            {
-                MessageBox.Show("Please enter an allowed command or add rules to the rule set.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
             var singleRule = new CommandApprovalRule
             {
                 Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
@@ -554,6 +614,15 @@ public sealed partial class MacroViewModel : ObservableObject
                 Enabled = true
             };
             rules = new List<CommandApprovalRule> { singleRule };
+        }
+        else
+        {
+            if (AutoConfirmPolicyMode != ApprovalPolicyMode.FoolMode)
+            {
+                _dialogService.ShowWarning("Invalid Command", "Please enter an allowed command or add rules to the rule set.");
+                return;
+            }
+            rules = new List<CommandApprovalRule>();
         }
 
         var ruleSet = new ApprovalRuleSet
@@ -572,12 +641,13 @@ public sealed partial class MacroViewModel : ObservableObject
             timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
             pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
             waitMode: AutoConfirmWaitMode,
-            focusBehavior: AutoConfirmFocusBehavior);
+            focusBehavior: AutoConfirmFocusBehavior,
+            policyMode: AutoConfirmPolicyMode);
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
-        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}, {AutoConfirmFocusBehavior}] Rules count: {rules.Count}");
+        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}, {AutoConfirmFocusBehavior}, {AutoConfirmPolicyMode}] Rules count: {rules.Count}");
     }
 
     [RelayCommand]
@@ -638,7 +708,7 @@ public sealed partial class MacroViewModel : ObservableObject
                 }
                 catch
                 {
-                    MessageBox.Show("Invalid hex color format. Use #RRGGBB (e.g. #00FF00)", "Invalid Color", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    _dialogService.ShowWarning("Invalid Color", "Invalid hex color format. Use #RRGGBB (e.g. #00FF00)");
                     return;
                 }
                 updatedAction = new WaitColorAction(ActionX, ActionY, col, WaitColorTol, TimeSpan.FromMilliseconds(WaitColorTimeoutMs));
@@ -647,7 +717,7 @@ public sealed partial class MacroViewModel : ObservableObject
             case 4: // Wait for Text
                 if (string.IsNullOrWhiteSpace(WaitForTextExpected))
                 {
-                    MessageBox.Show("Please enter expected text to wait for.", "Invalid Text", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    _dialogService.ShowWarning("Invalid Text", "Please enter expected text to wait for.");
                     return;
                 }
                 updatedAction = new WaitForTextAction(
@@ -660,7 +730,7 @@ public sealed partial class MacroViewModel : ObservableObject
             case 5: // Safe Auto Confirm
                 if (string.IsNullOrWhiteSpace(AutoConfirmPrompt))
                 {
-                    MessageBox.Show("Please enter the expected prompt text.", "Invalid Prompt", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    _dialogService.ShowWarning("Invalid Prompt", "Please enter the expected prompt text.");
                     return;
                 }
 
@@ -677,14 +747,8 @@ public sealed partial class MacroViewModel : ObservableObject
                         AutoConfirmPrompt.Trim(),
                         AutoConfirmSelectedOption?.Trim() ?? "Yes, run command")).ToList();
                 }
-                else
+                else if (!string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
                 {
-                    if (string.IsNullOrWhiteSpace(AutoConfirmAllowedCommand))
-                    {
-                        MessageBox.Show("Please enter an allowed command or add rules to the rule set.", "Invalid Command", MessageBoxButton.OK, MessageBoxImage.Warning);
-                        return;
-                    }
-
                     var singleRule = new CommandApprovalRule
                     {
                         Name = string.IsNullOrWhiteSpace(AutoConfirmRuleName) ? "Safe Auto Confirm" : AutoConfirmRuleName.Trim(),
@@ -696,6 +760,15 @@ public sealed partial class MacroViewModel : ObservableObject
                         Enabled = true
                     };
                     rules = new List<CommandApprovalRule> { singleRule };
+                }
+                else
+                {
+                    if (AutoConfirmPolicyMode != ApprovalPolicyMode.FoolMode)
+                    {
+                        _dialogService.ShowWarning("Invalid Command", "Please enter an allowed command or add rules to the rule set.");
+                        return;
+                    }
+                    rules = new List<CommandApprovalRule>();
                 }
 
                 var ruleSet = new ApprovalRuleSet
@@ -714,7 +787,8 @@ public sealed partial class MacroViewModel : ObservableObject
                     timeout: TimeSpan.FromMilliseconds(AutoConfirmTimeoutMs),
                     pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
                     waitMode: AutoConfirmWaitMode,
-                    focusBehavior: AutoConfirmFocusBehavior);
+                    focusBehavior: AutoConfirmFocusBehavior,
+                    policyMode: AutoConfirmPolicyMode);
                 break;
 
             default:
@@ -790,6 +864,7 @@ public sealed partial class MacroViewModel : ObservableObject
                 AutoConfirmPollIntervalMs = (int)saca.PollInterval.TotalMilliseconds;
                 AutoConfirmTimeoutMs = (int)saca.Timeout.TotalMilliseconds;
                 AutoConfirmFocusBehavior = saca.FocusBehavior;
+                AutoConfirmPolicyMode = saca.PolicyMode;
                 break;
         }
     }
@@ -880,18 +955,45 @@ public sealed partial class MacroViewModel : ObservableObject
         if (_macroRunner.State != MacroRunnerState.Idle)
             return;
 
-        if (_currentTarget == null || !_currentTarget.IsWindowValid())
+        if (!_targetValidator.IsValid(_currentTarget))
         {
-            MessageBox.Show("Please select a valid target window in Target Inspector before running a macro.",
-                "No Target Selected", MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogService.ShowInfo("No Target Selected",
+                "Please select a valid target window in Target Inspector before running a macro.");
             return;
         }
 
         if (Actions.Count == 0)
         {
-            MessageBox.Show("Please add at least one macro action to the sequence.",
-                "No Actions Configured", MessageBoxButton.OK, MessageBoxImage.Information);
+            _dialogService.ShowInfo("No Actions Configured",
+                "Please add at least one macro action to the sequence.");
             return;
+        }
+
+        var actionList = Actions.Select(a => a.Action).ToList();
+
+        // Check if any action requires FOOL MODE Confirm confirmation
+        bool requiresFoolModeConfirmation = actionList.Any(a =>
+            a is SafeAutoConfirmAction saca &&
+            saca.PolicyMode == ApprovalPolicyMode.FoolMode &&
+            saca.ExecutionMode == AutoConfirmExecutionMode.Confirm);
+
+        bool isAuthorized = false;
+        if (requiresFoolModeConfirmation)
+        {
+            bool userConfirmed = ShowFoolModeConfirmationDialog();
+            if (!userConfirmed)
+            {
+                _logger.Info("FOOL MODE macro execution cancelled by user. Runner remains IDLE.");
+                return;
+            }
+
+            isAuthorized = true;
+            IsFoolModeActive = true;
+            _logger.Warning("WARNING MacroRunner started with FOOL MODE authorization.");
+        }
+        else
+        {
+            IsFoolModeActive = false;
         }
 
         // Reset all item statuses to Ready
@@ -900,8 +1002,11 @@ public sealed partial class MacroViewModel : ObservableObject
             act.SetStatus("Ready", "#888888");
         }
 
-        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget.TargetHwnd, _keyboard);
-        var actionList = Actions.Select(a => a.Action).ToList();
+        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget!.TargetHwnd, _keyboard)
+        {
+            IsFoolModeAuthorized = isAuthorized
+        };
+
         var settings = new MacroRunnerSettings(
             RepeatMode,
             Math.Max(1, RepeatCount),
@@ -910,9 +1015,22 @@ public sealed partial class MacroViewModel : ObservableObject
         _ = _macroRunner.RunAsync(actionList, context, settings);
     }
 
+    private const string FoolModeWarningMessage =
+        "⚠ FOOL MODE\n\n" +
+        "This macro can automatically approve ANY command presented by the recognized permission prompt.\n\n" +
+        "Command filtering is disabled.\n\n" +
+        "The automation may execute destructive or unexpected commands without asking again during this run.\n\n" +
+        "Are you sure you want to proceed with FOOL MODE for this run session?";
+
+    private bool ShowFoolModeConfirmationDialog()
+    {
+        return _dialogService.Confirm("⚠ FOOL MODE Confirmation", FoolModeWarningMessage, DialogSeverity.Warning);
+    }
+
     [RelayCommand]
     public void StopMacro()
     {
+        IsFoolModeActive = false;
         if (_macroRunner.State == MacroRunnerState.Running)
         {
             _macroRunner.Stop();

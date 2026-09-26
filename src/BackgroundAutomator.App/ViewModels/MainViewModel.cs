@@ -9,6 +9,7 @@ using BackgroundAutomator.Core.Profiles;
 using BackgroundAutomator.Core.Runner;
 using BackgroundAutomator.Core.Security;
 using BackgroundAutomator.Core.Targeting;
+using BackgroundAutomator.App.Services;
 
 namespace BackgroundAutomator.App.ViewModels;
 
@@ -49,7 +50,7 @@ public sealed partial class MainViewModel : ObservableObject
 
     public Type? CurrentActivePageType { get; set; }
 
-    public MainViewModel() : this(null, null, null, null)
+    public MainViewModel() : this(null, null, null, null, null, null)
     {
     }
 
@@ -57,7 +58,9 @@ public sealed partial class MainViewModel : ObservableObject
         IAppLogger? logger = null,
         ProfileStorageService? profileStorage = null,
         WindowTargetService? targetService = null,
-        TargetResolver? targetResolver = null)
+        TargetResolver? targetResolver = null,
+        IDialogService? dialogService = null,
+        ITargetValidator? targetValidator = null)
     {
         _logger = logger ?? new InMemoryLogger(maxEntries: 500);
         _coordinateService = new CoordinateService(_logger);
@@ -70,6 +73,9 @@ public sealed partial class MainViewModel : ObservableObject
         _elevationService = new ProcessElevationService(_logger);
         _targetResolver = targetResolver ?? new TargetResolver(_targetService, _coordinateService, _logger);
         _profileStorage = profileStorage ?? new ProfileStorageService(logger: _logger);
+
+        var dialogSvc = dialogService ?? new WpfDialogService();
+        var targetVal = targetValidator ?? new Win32TargetValidator();
 
         TargetVM = new TargetViewModel(
             _targetService,
@@ -88,7 +94,9 @@ public sealed partial class MainViewModel : ObservableObject
             _captureService,
             _keyboard,
             _logger,
-            OnMacroRunnerStateChanged);
+            OnMacroRunnerStateChanged,
+            dialogSvc,
+            targetVal);
 
         ProfilesVM = new ProfilesViewModel(
             _profileStorage,
@@ -193,14 +201,23 @@ public sealed partial class MainViewModel : ObservableObject
         switch (state)
         {
             case MacroRunnerState.Running:
-                StatusRunnerText = "Macro: RUNNING";
-                StatusRunnerColor = "#107C10";
+                if (MacroVM.IsFoolModeActive)
+                {
+                    StatusRunnerText = "Runner: RUNNING — FOOL MODE";
+                    StatusRunnerColor = "#E81123";
+                }
+                else
+                {
+                    StatusRunnerText = "Macro: RUNNING";
+                    StatusRunnerColor = "#107C10";
+                }
                 break;
             case MacroRunnerState.Stopping:
                 StatusRunnerText = "Macro: STOPPING";
                 StatusRunnerColor = "#D83B01";
                 break;
             case MacroRunnerState.Idle:
+                MacroVM.IsFoolModeActive = false;
                 // Only reset if simple runner is not running
                 if (_runner.State == RunnerState.Idle)
                 {

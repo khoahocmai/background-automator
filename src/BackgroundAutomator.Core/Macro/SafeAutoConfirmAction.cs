@@ -37,6 +37,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
     public KeyDeliveryMode DeliveryMode { get; }
     public AutoConfirmWaitMode WaitMode { get; }
     public FocusBehavior FocusBehavior { get; }
+    public ApprovalPolicyMode PolicyMode { get; } = ApprovalPolicyMode.ExactRules;
     public TimeSpan Timeout { get; }
     public TimeSpan PollInterval { get; }
     public IntPtr OverrideHwnd { get; }
@@ -49,6 +50,10 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         {
             string waitDisplay = WaitMode == AutoConfirmWaitMode.Indefinite ? "Indefinite" : $"Timeout: {Timeout.TotalSeconds:F0}s";
             string focusDisplay = FocusBehavior == FocusBehavior.KeepTargetForeground ? " [KeepFG]" : string.Empty;
+            if (PolicyMode == ApprovalPolicyMode.FoolMode)
+            {
+                return $"[{ExecutionMode}][FOOL MODE] \"{RuleSet.Name}\" -> Unrestricted ({waitDisplay}){focusDisplay}";
+            }
             if (RuleSet.Rules.Count == 1)
             {
                 return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay}){focusDisplay}";
@@ -65,7 +70,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         TimeSpan? pollInterval = null,
         IntPtr overrideHwnd = default,
         AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
-        FocusBehavior focusBehavior = FocusBehavior.FastPulse)
+        FocusBehavior focusBehavior = FocusBehavior.FastPulse,
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
     {
         RuleSet = ruleSet ?? throw new ArgumentNullException(nameof(ruleSet));
         ExecutionMode = executionMode;
@@ -75,6 +81,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         OverrideHwnd = overrideHwnd;
         WaitMode = waitMode;
         FocusBehavior = focusBehavior;
+        PolicyMode = policyMode;
     }
 
     public SafeAutoConfirmAction(
@@ -85,7 +92,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         TimeSpan? pollInterval = null,
         IntPtr overrideHwnd = default,
         AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
-        FocusBehavior focusBehavior = FocusBehavior.FastPulse)
+        FocusBehavior focusBehavior = FocusBehavior.FastPulse,
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
         : this(
             ApprovalRuleSet.FromSingleRule(rule ?? throw new ArgumentNullException(nameof(rule))),
             executionMode,
@@ -94,7 +102,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             pollInterval,
             overrideHwnd,
             waitMode,
-            focusBehavior)
+            focusBehavior,
+            policyMode)
     {
     }
 
@@ -103,7 +112,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         if (context == null)
             throw new ArgumentNullException(nameof(context));
 
-        if (RuleSet.Rules.Count == 0 || !RuleSet.Rules.Any(r => r.Enabled && !string.IsNullOrWhiteSpace(r.AllowedCommand)))
+        if (PolicyMode == ApprovalPolicyMode.ExactRules && (RuleSet.Rules.Count == 0 || !RuleSet.Rules.Any(r => r.Enabled && !string.IsNullOrWhiteSpace(r.AllowedCommand))))
         {
             return MacroActionResult.InvalidConfiguration("Rule set must contain at least one enabled rule with a non-empty allowed command.");
         }
@@ -121,6 +130,13 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         if (PollInterval <= TimeSpan.Zero)
         {
             return MacroActionResult.InvalidConfiguration($"PollInterval must be positive: {PollInterval}");
+        }
+
+        // Section 9/10: Guard FOOL MODE Confirm execution with explicit session authorization
+        if (PolicyMode == ApprovalPolicyMode.FoolMode && ExecutionMode == AutoConfirmExecutionMode.Confirm && !context.IsFoolModeAuthorized)
+        {
+            context.Logger?.Warning("[AutoConfirm][FOOL MODE] Execution attempted without explicit session authorization. Blocked.");
+            return MacroActionResult.ApprovalBlocked("FOOL MODE execution requires explicit user authorization for this runner session.");
         }
 
         IntPtr targetHwnd = OverrideHwnd != IntPtr.Zero ? OverrideHwnd : context.TargetHwnd;
@@ -148,8 +164,15 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return MacroActionResult.ApprovalBlocked("UIPI mismatch: Target is running as Administrator while BackgroundAutomator is not. Auto-confirm blocked.");
         }
 
-        string rulesSummary = string.Join(", ", RuleSet.Rules.Where(r => r.Enabled).Select(r => $"\"{r.AllowedCommand}\""));
-        context.Logger?.Info($"[AutoConfirm] Started. RuleSet: \"{RuleSet.Name}\", Mode: {ExecutionMode}, Wait: {WaitMode}, Delivery: {DeliveryMode}, Rules: [{rulesSummary}]");
+        if (PolicyMode == ApprovalPolicyMode.FoolMode)
+        {
+            context.Logger?.Info($"[AutoConfirm][FOOL MODE] Started. RuleSet: \"{RuleSet.Name}\", Mode: {ExecutionMode}, Wait: {WaitMode}, Delivery: {DeliveryMode}, Policy: {PolicyMode}");
+        }
+        else
+        {
+            string rulesSummary = string.Join(", ", RuleSet.Rules.Where(r => r.Enabled).Select(r => $"\"{r.AllowedCommand}\""));
+            context.Logger?.Info($"[AutoConfirm] Started. RuleSet: \"{RuleSet.Name}\", Mode: {ExecutionMode}, Wait: {WaitMode}, Delivery: {DeliveryMode}, Rules: [{rulesSummary}]");
+        }
 
         // Section 1.1: Always inspect visible viewport only for approval automation
         var request = new TextDetectionRequest(
@@ -203,22 +226,43 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 string actualProc = context.ForegroundService.GetProcessName(targetHwnd);
                 string actualClass = context.ForegroundService.GetWindowClass(targetHwnd);
 
-                var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass);
+                var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
 
                 if (decision.IsAllowed)
                 {
-                    context.Logger?.Info("[AutoConfirm] approval prompt detected");
-                    context.Logger?.Info($"[AutoConfirm] command extracted: \"{snapshot.CommandText}\"");
-                    string matchedRuleMsg = !string.IsNullOrEmpty(decision.MatchedRuleName)
-                        ? $" using rule '{decision.MatchedRuleName}'"
-                        : string.Empty;
-                    context.Logger?.Info($"[AutoConfirm] Approved command '{snapshot.CommandText}'{matchedRuleMsg}.");
-
-                    // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
-                    if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
+                    if (PolicyMode == ApprovalPolicyMode.FoolMode)
                     {
-                        context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"{matchedRuleMsg}");
-                        return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
+                        context.Logger?.Info("[AutoConfirm][FOOL MODE] approval prompt detected");
+                        if (!string.IsNullOrWhiteSpace(snapshot.CommandText))
+                        {
+                            context.Logger?.Info($"[AutoConfirm][FOOL MODE] command: \"{snapshot.CommandText}\"");
+                        }
+
+                        // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
+                        if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
+                        {
+                            context.Logger?.Info($"[AutoConfirm][FOOL MODE] WOULD APPROVE: \"{snapshot.CommandText ?? "[Unknown]"}\"");
+                            return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
+                        }
+
+                        context.Logger?.Info("[AutoConfirm][FOOL MODE] unrestricted approval authorized for this runner session");
+                        context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{snapshot.CommandText ?? "[Unknown]"}\"");
+                    }
+                    else
+                    {
+                        context.Logger?.Info("[AutoConfirm] approval prompt detected");
+                        context.Logger?.Info($"[AutoConfirm] command extracted: \"{snapshot.CommandText}\"");
+                        string matchedRuleMsg = !string.IsNullOrEmpty(decision.MatchedRuleName)
+                            ? $" using rule '{decision.MatchedRuleName}'"
+                            : string.Empty;
+                        context.Logger?.Info($"[AutoConfirm] Approved command '{snapshot.CommandText}'{matchedRuleMsg}.");
+
+                        // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
+                        if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
+                        {
+                            context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"{matchedRuleMsg}");
+                            return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
+                        }
                     }
 
                     // 2. Confirm mode: execute controlled foreground pulse
@@ -414,14 +458,21 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             var revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
 
             // Re-evaluate complete rule set with fresh process identity and fresh snapshot
-            var revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass);
+            var revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass, PolicyMode);
             if (!revalDecision.IsAllowed)
             {
                 context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
                 return MacroActionResult.ApprovalBlocked($"Rule revalidation failed: {revalDecision.Explanation}");
             }
 
-            context.Logger?.Info("[AutoConfirm] rule revalidated");
+            if (PolicyMode == ApprovalPolicyMode.FoolMode)
+            {
+                context.Logger?.Info("[AutoConfirm][FOOL MODE] unrestricted approval revalidated");
+            }
+            else
+            {
+                context.Logger?.Info("[AutoConfirm] rule revalidated");
+            }
 
             // Step 4: Verify foreground ownership IMMEDIATELY before SendInput (no intervening async delay)
             IntPtr immediateFg = context.ForegroundService.GetForegroundWindow();
@@ -432,6 +483,11 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             }
 
             // Step 5: Dispatch Enter (maximum 1 dispatch per action execution)
+            if (PolicyMode == ApprovalPolicyMode.FoolMode)
+            {
+                context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{revalSnapshot.CommandText ?? "[Unknown]"}\"");
+            }
+
             if (DeliveryMode == KeyDeliveryMode.ForegroundPulse)
             {
                 bool sent = context.ForegroundKeyboard.SendEnter();
@@ -536,11 +592,19 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
             }
 
-            string matchedRuleMsg = !string.IsNullOrEmpty(revalDecision.MatchedRuleName)
-                ? $" using rule '{revalDecision.MatchedRuleName}'"
-                : string.Empty;
-            context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
-            return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\"{matchedRuleMsg}.");
+            if (PolicyMode == ApprovalPolicyMode.FoolMode)
+            {
+                context.Logger?.Info($"[AutoConfirm][FOOL MODE] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
+                return MacroActionResult.Success($"[FOOL MODE] Auto-confirmed unrestricted command \"{revalSnapshot.CommandText ?? "[Unknown]"}\".");
+            }
+            else
+            {
+                string matchedRuleMsg = !string.IsNullOrEmpty(revalDecision.MatchedRuleName)
+                    ? $" using rule '{revalDecision.MatchedRuleName}'"
+                    : string.Empty;
+                context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
+                return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\"{matchedRuleMsg}.");
+            }
         }
         finally
         {
