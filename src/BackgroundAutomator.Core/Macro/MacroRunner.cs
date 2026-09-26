@@ -34,11 +34,15 @@ public sealed class MacroRunner : IDisposable
         }
     }
 
+    public int CurrentCycle { get; private set; }
+
     public event Action<MacroRunnerState>? StateChanged;
     public event Action<int, IMacroAction>? ActionStarting;
     public event Action<int, IMacroAction, string>? ActionProgress;
     public event Action<int, IMacroAction, MacroActionResult>? ActionCompleted;
     public event Action<MacroExecutionResult>? ExecutionCompleted;
+    public event Action<int>? CycleStarting;
+    public event Action<int>? CycleCompleted;
 
     public MacroRunner(IAppLogger? logger = null)
     {
@@ -46,20 +50,33 @@ public sealed class MacroRunner : IDisposable
     }
 
     /// <summary>
-    /// Starts executing the specified actions sequentially.
+    /// Starts executing the specified actions sequentially once.
+    /// Throws <see cref="InvalidOperationException"/> if already running or stopping.
+    /// </summary>
+    public Task<MacroExecutionResult> RunAsync(
+        IReadOnlyList<IMacroAction> actions,
+        MacroExecutionContext context,
+        CancellationToken externalToken = default)
+        => RunAsync(actions, context, MacroRunnerSettings.Default, externalToken);
+
+    /// <summary>
+    /// Starts executing the specified actions sequentially according to the specified repeat settings.
     /// Throws <see cref="InvalidOperationException"/> if already running or stopping.
     /// </summary>
     /// <param name="actions">Ordered sequence of macro actions to run.</param>
     /// <param name="context">Macro execution context providing clicker, capture, and target HWND.</param>
+    /// <param name="settings">Execution repeat and pacing settings.</param>
     /// <param name="externalToken">Optional external cancellation token.</param>
     /// <returns>A task representing the macro execution, returning a <see cref="MacroExecutionResult"/>.</returns>
     public async Task<MacroExecutionResult> RunAsync(
         IReadOnlyList<IMacroAction> actions,
         MacroExecutionContext context,
+        MacroRunnerSettings settings,
         CancellationToken externalToken = default)
     {
         ArgumentNullException.ThrowIfNull(actions);
         ArgumentNullException.ThrowIfNull(context);
+        settings ??= MacroRunnerSettings.Default;
 
         CancellationToken token;
 
@@ -76,60 +93,132 @@ public sealed class MacroRunner : IDisposable
 
             token = _cts.Token;
             _state = MacroRunnerState.Running;
+            CurrentCycle = 0;
         }
 
         // Notify state changed outside lock
         StateChanged?.Invoke(MacroRunnerState.Running);
-        _logger?.Info($"MacroRunner started with {actions.Count} action(s).");
+        _logger?.Info($"MacroRunner started with {actions.Count} action(s). RepeatMode={settings.RepeatMode}, RepeatCount={settings.RepeatCount}, CycleDelay={settings.CycleDelayMilliseconds}ms.");
 
         var sw = Stopwatch.StartNew();
-        int completedCount = 0;
+        int totalCompletedActions = 0;
+        int completedCycles = 0;
         MacroActionResult lastResult = MacroActionResult.Success();
 
         try
         {
-            for (int i = 0; i < actions.Count; i++)
+            if (actions.Count == 0)
             {
-                if (token.IsCancellationRequested)
+                return new MacroExecutionResult(
+                    FinalStatus: MacroActionStatus.Success,
+                    CompletedActionsCount: 0,
+                    TotalActionsCount: 0,
+                    ElapsedTime: sw.Elapsed,
+                    Message: "No actions configured.",
+                    CompletedCyclesCount: 0);
+            }
+
+            int cycle = 0;
+            while (!token.IsCancellationRequested)
+            {
+                if (settings.RepeatMode == MacroRepeatMode.Once && cycle >= 1)
                 {
-                    lastResult = MacroActionResult.Cancelled();
+                    break;
+                }
+                if (settings.RepeatMode == MacroRepeatMode.Count && cycle >= settings.RepeatCount)
+                {
                     break;
                 }
 
-                IMacroAction currentAction = actions[i];
-                ActionStarting?.Invoke(i, currentAction);
-                _logger?.Debug($"MacroRunner executing action [{i + 1}/{actions.Count}]: {currentAction.DisplayString}");
+                cycle++;
+                CurrentCycle = cycle;
+                CycleStarting?.Invoke(cycle);
+                _logger?.Debug($"MacroRunner starting cycle {cycle}.");
 
-                int actionIndex = i;
-                context.ProgressCallback = progress => ActionProgress?.Invoke(actionIndex, currentAction, progress);
+                bool cycleFailed = false;
 
-                try
+                for (int i = 0; i < actions.Count; i++)
                 {
-                    lastResult = await currentAction.ExecuteAsync(context, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    lastResult = MacroActionResult.Cancelled();
-                }
-                catch (Exception ex)
-                {
-                    _logger?.Error($"Macro action {currentAction.Name} threw unhandled exception: {ex.Message}");
-                    lastResult = MacroActionResult.ClickFailed($"Unhandled exception: {ex.Message}");
-                }
-                finally
-                {
-                    context.ProgressCallback = null;
+                    if (token.IsCancellationRequested)
+                    {
+                        lastResult = MacroActionResult.Cancelled();
+                        cycleFailed = true;
+                        break;
+                    }
+
+                    IMacroAction currentAction = actions[i];
+                    ActionStarting?.Invoke(i, currentAction);
+                    _logger?.Debug($"MacroRunner [Cycle {cycle}] executing action [{i + 1}/{actions.Count}]: {currentAction.DisplayString}");
+
+                    int actionIndex = i;
+                    context.ProgressCallback = progress => ActionProgress?.Invoke(actionIndex, currentAction, progress);
+
+                    try
+                    {
+                        lastResult = await currentAction.ExecuteAsync(context, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        lastResult = MacroActionResult.Cancelled();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.Error($"Macro action {currentAction.Name} threw unhandled exception: {ex.Message}");
+                        lastResult = MacroActionResult.ClickFailed($"Unhandled exception: {ex.Message}");
+                    }
+                    finally
+                    {
+                        context.ProgressCallback = null;
+                    }
+
+                    ActionCompleted?.Invoke(i, currentAction, lastResult);
+
+                    if (!lastResult.IsSuccess)
+                    {
+                        _logger?.Warning($"MacroRunner stopped at cycle {cycle}, action [{i + 1}/{actions.Count}] with status {lastResult.Status}: {lastResult.Message}");
+                        cycleFailed = true;
+                        break;
+                    }
+
+                    totalCompletedActions++;
                 }
 
-                ActionCompleted?.Invoke(i, currentAction, lastResult);
-
-                if (!lastResult.IsSuccess)
+                if (cycleFailed)
                 {
-                    _logger?.Warning($"MacroRunner stopped at action [{i + 1}/{actions.Count}] with status {lastResult.Status}: {lastResult.Message}");
                     break;
                 }
 
-                completedCount++;
+                completedCycles++;
+                CycleCompleted?.Invoke(cycle);
+
+                bool hasMoreCycles = settings.RepeatMode switch
+                {
+                    MacroRepeatMode.Once => false,
+                    MacroRepeatMode.Count => cycle < settings.RepeatCount,
+                    MacroRepeatMode.UntilStopped => true,
+                    _ => false
+                };
+
+                if (hasMoreCycles && !token.IsCancellationRequested)
+                {
+                    if (settings.CycleDelayMilliseconds > 0)
+                    {
+                        try
+                        {
+                            await Task.Delay(settings.CycleDelayMilliseconds, token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            lastResult = MacroActionResult.Cancelled();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (token.IsCancellationRequested && lastResult.IsSuccess)
+            {
+                lastResult = MacroActionResult.Cancelled();
             }
         }
         finally
@@ -141,20 +230,29 @@ public sealed class MacroRunner : IDisposable
                 _cts?.Dispose();
                 _cts = null;
                 _state = MacroRunnerState.Idle;
+                CurrentCycle = 0;
             }
 
             StateChanged?.Invoke(MacroRunnerState.Idle);
         }
 
+        int targetTotalActions = settings.RepeatMode switch
+        {
+            MacroRepeatMode.Count => actions.Count * settings.RepeatCount,
+            MacroRepeatMode.Once => actions.Count,
+            _ => actions.Count
+        };
+
         var executionResult = new MacroExecutionResult(
             FinalStatus: lastResult.Status,
-            CompletedActionsCount: completedCount,
-            TotalActionsCount: actions.Count,
+            CompletedActionsCount: totalCompletedActions,
+            TotalActionsCount: targetTotalActions,
             ElapsedTime: sw.Elapsed,
             Message: lastResult.Message,
-            BlockerReason: lastResult.BlockerReason);
+            BlockerReason: lastResult.BlockerReason,
+            CompletedCyclesCount: completedCycles);
 
-        _logger?.Info($"MacroRunner finished: Status={executionResult.FinalStatus}, Completed={completedCount}/{actions.Count}, Time={sw.ElapsedMilliseconds}ms");
+        _logger?.Info($"MacroRunner finished: Status={executionResult.FinalStatus}, Cycles={completedCycles}, CompletedActions={totalCompletedActions}/{targetTotalActions}, Time={sw.ElapsedMilliseconds}ms");
         ExecutionCompleted?.Invoke(executionResult);
 
         return executionResult;

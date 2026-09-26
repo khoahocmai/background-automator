@@ -9,7 +9,8 @@ public sealed record MacroExecutionResult(
     int TotalActionsCount,
     TimeSpan ElapsedTime,
     string? Message = null,
-    string? BlockerReason = null)
+    string? BlockerReason = null,
+    int CompletedCyclesCount = 0)
 {
     public bool IsSuccess => FinalStatus == MacroActionStatus.Success;
 }

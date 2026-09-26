@@ -11,25 +11,67 @@ namespace BackgroundAutomator.Core.Macro;
 /// <summary>
 /// Safe terminal command auto-confirmation macro action.
 /// Observes the visible terminal viewport, extracts prompt/options/command, verifies against an explicit
-/// allowlist rule, briefly pulses foreground focus (if Confirm mode), revalidates all conditions,
-/// dispatches Enter via SendInput, and restores the previous foreground window.
+/// approval rule set, briefly pulses foreground focus (if Confirm mode), revalidates all conditions,
+/// dispatches Enter via SendInput (max 1 per action execution), and restores the previous foreground window.
 /// </summary>
 public sealed class SafeAutoConfirmAction : IMacroAction
 {
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
     public static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(500);
 
-    public CommandApprovalRule Rule { get; }
+    public ApprovalRuleSet RuleSet { get; }
+
+    /// <summary>
+    /// Backward-compatible access to primary rule.
+    /// </summary>
+    public CommandApprovalRule Rule => RuleSet.Rules.FirstOrDefault() ?? new CommandApprovalRule
+    {
+        Name = RuleSet.Name,
+        ExpectedProcess = RuleSet.ExpectedProcess,
+        ExpectedWindowClass = RuleSet.ExpectedWindowClass,
+        ExpectedPrompt = RuleSet.ExpectedPrompt,
+        ExpectedSelectedOption = RuleSet.ExpectedSelectedOption
+    };
+
     public AutoConfirmExecutionMode ExecutionMode { get; }
     public KeyDeliveryMode DeliveryMode { get; }
+    public AutoConfirmWaitMode WaitMode { get; }
     public TimeSpan Timeout { get; }
     public TimeSpan PollInterval { get; }
     public IntPtr OverrideHwnd { get; }
 
     public string Name => "Safe Auto Confirm";
 
-    public string DisplayString =>
-        $"[{ExecutionMode}] \"{Rule.Name}\" -> {Rule.AllowedCommand} (Timeout: {Timeout.TotalSeconds:F0}s)";
+    public string DisplayString
+    {
+        get
+        {
+            string waitDisplay = WaitMode == AutoConfirmWaitMode.Indefinite ? "Indefinite" : $"Timeout: {Timeout.TotalSeconds:F0}s";
+            if (RuleSet.Rules.Count == 1)
+            {
+                return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay})";
+            }
+            return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules.Count} rules ({waitDisplay})";
+        }
+    }
+
+    public SafeAutoConfirmAction(
+        ApprovalRuleSet ruleSet,
+        AutoConfirmExecutionMode executionMode = AutoConfirmExecutionMode.ObserveOnly,
+        KeyDeliveryMode deliveryMode = KeyDeliveryMode.ForegroundPulse,
+        TimeSpan? timeout = null,
+        TimeSpan? pollInterval = null,
+        IntPtr overrideHwnd = default,
+        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout)
+    {
+        RuleSet = ruleSet ?? throw new ArgumentNullException(nameof(ruleSet));
+        ExecutionMode = executionMode;
+        DeliveryMode = deliveryMode;
+        Timeout = timeout ?? DefaultTimeout;
+        PollInterval = pollInterval ?? DefaultPollInterval;
+        OverrideHwnd = overrideHwnd;
+        WaitMode = waitMode;
+    }
 
     public SafeAutoConfirmAction(
         CommandApprovalRule rule,
@@ -37,14 +79,17 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         KeyDeliveryMode deliveryMode = KeyDeliveryMode.ForegroundPulse,
         TimeSpan? timeout = null,
         TimeSpan? pollInterval = null,
-        IntPtr overrideHwnd = default)
+        IntPtr overrideHwnd = default,
+        AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout)
+        : this(
+            ApprovalRuleSet.FromSingleRule(rule ?? throw new ArgumentNullException(nameof(rule))),
+            executionMode,
+            deliveryMode,
+            timeout,
+            pollInterval,
+            overrideHwnd,
+            waitMode)
     {
-        Rule = rule ?? throw new ArgumentNullException(nameof(rule));
-        ExecutionMode = executionMode;
-        DeliveryMode = deliveryMode;
-        Timeout = timeout ?? DefaultTimeout;
-        PollInterval = pollInterval ?? DefaultPollInterval;
-        OverrideHwnd = overrideHwnd;
     }
 
     public async Task<MacroActionResult> ExecuteAsync(MacroExecutionContext context, CancellationToken ct)
@@ -52,17 +97,17 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         if (context == null)
             throw new ArgumentNullException(nameof(context));
 
-        if (string.IsNullOrWhiteSpace(Rule.AllowedCommand))
+        if (RuleSet.Rules.Count == 0 || !RuleSet.Rules.Any(r => r.Enabled && !string.IsNullOrWhiteSpace(r.AllowedCommand)))
         {
-            return MacroActionResult.InvalidConfiguration("Rule AllowedCommand cannot be empty.");
+            return MacroActionResult.InvalidConfiguration("Rule set must contain at least one enabled rule with a non-empty allowed command.");
         }
 
-        if (string.IsNullOrWhiteSpace(Rule.ExpectedPrompt))
+        if (string.IsNullOrWhiteSpace(RuleSet.ExpectedPrompt))
         {
             return MacroActionResult.InvalidConfiguration("Rule ExpectedPrompt cannot be empty.");
         }
 
-        if (Timeout <= TimeSpan.Zero)
+        if (WaitMode == AutoConfirmWaitMode.FixedTimeout && Timeout <= TimeSpan.Zero)
         {
             return MacroActionResult.InvalidConfiguration($"Timeout must be positive: {Timeout}");
         }
@@ -97,11 +142,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return MacroActionResult.ApprovalBlocked("UIPI mismatch: Target is running as Administrator while BackgroundAutomator is not. Auto-confirm blocked.");
         }
 
-        context.Logger?.Info($"[AutoConfirm] Started. Rule: \"{Rule.Name}\", Mode: {ExecutionMode}, Delivery: {DeliveryMode}, Allowed: \"{Rule.AllowedCommand}\"");
+        string rulesSummary = string.Join(", ", RuleSet.Rules.Where(r => r.Enabled).Select(r => $"\"{r.AllowedCommand}\""));
+        context.Logger?.Info($"[AutoConfirm] Started. RuleSet: \"{RuleSet.Name}\", Mode: {ExecutionMode}, Wait: {WaitMode}, Delivery: {DeliveryMode}, Rules: [{rulesSummary}]");
 
         // Section 1.1: Always inspect visible viewport only for approval automation
         var request = new TextDetectionRequest(
-            Rule.ExpectedPrompt,
+            RuleSet.ExpectedPrompt,
             TextMatchMode.Contains,
             TextDetectionScope.VisibleViewportOnly);
 
@@ -143,26 +189,29 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 string rawText = detectResult.RawText ?? detectResult.ObservedText ?? string.Empty;
                 var extraction = context.CommandPromptParser.Parse(
                     rawText,
-                    Rule.ExpectedPrompt,
-                    Rule.ExpectedSelectedOption);
+                    RuleSet.ExpectedPrompt,
+                    RuleSet.ExpectedSelectedOption);
 
                 var snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, rawText, extraction);
 
                 string actualProc = context.ForegroundService.GetProcessName(targetHwnd);
                 string actualClass = context.ForegroundService.GetWindowClass(targetHwnd);
 
-                var decision = CommandApprovalEvaluator.Evaluate(Rule, snapshot, actualProc, actualClass);
+                var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass);
 
                 if (decision.IsAllowed)
                 {
                     context.Logger?.Info("[AutoConfirm] approval prompt detected");
                     context.Logger?.Info($"[AutoConfirm] command extracted: \"{snapshot.CommandText}\"");
-                    context.Logger?.Info($"[AutoConfirm] rule \"{Rule.Name}\" matched");
+                    string matchedRuleMsg = !string.IsNullOrEmpty(decision.MatchedRuleName)
+                        ? $" using rule '{decision.MatchedRuleName}'"
+                        : string.Empty;
+                    context.Logger?.Info($"[AutoConfirm] Approved command '{snapshot.CommandText}'{matchedRuleMsg}.");
 
                     // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
                     if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
                     {
-                        context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"");
+                        context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"{matchedRuleMsg}");
                         return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
                     }
 
@@ -194,18 +243,27 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 context.ReportProgress("Waiting — Prompt not visible");
             }
 
-            if (sw.Elapsed >= Timeout)
+            if (WaitMode == AutoConfirmWaitMode.FixedTimeout)
             {
-                break;
+                if (sw.Elapsed >= Timeout)
+                {
+                    break;
+                }
+
+                TimeSpan remaining = Timeout - sw.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    break;
+                }
             }
 
-            TimeSpan remaining = Timeout - sw.Elapsed;
-            if (remaining <= TimeSpan.Zero)
+            TimeSpan delay = PollInterval;
+            if (WaitMode == AutoConfirmWaitMode.FixedTimeout)
             {
-                break;
+                TimeSpan remaining = Timeout - sw.Elapsed;
+                delay = remaining < PollInterval ? remaining : PollInterval;
             }
 
-            TimeSpan delay = remaining < PollInterval ? remaining : PollInterval;
             try
             {
                 await Task.Delay(delay, ct).ConfigureAwait(false);
@@ -217,8 +275,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         }
 
         string timeoutMsg = !string.IsNullOrEmpty(lastBlockedReason)
-            ? $"Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms. Last blocker: {lastBlockedReason}"
-            : $"Timed out waiting for approval prompt under rule '{Rule.Name}' after {Timeout.TotalMilliseconds:F0}ms.";
+            ? $"Timed out waiting for approval prompt under rule set '{RuleSet.Name}' after {Timeout.TotalMilliseconds:F0}ms. Last blocker: {lastBlockedReason}"
+            : $"Timed out waiting for approval prompt under rule set '{RuleSet.Name}' after {Timeout.TotalMilliseconds:F0}ms.";
 
         context.Logger?.Warning($"[AutoConfirm] {timeoutMsg}");
         return MacroActionResult.Timeout(timeoutMsg, lastBlockReason?.ToString());
@@ -328,11 +386,11 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             // Re-parse command
             string revalRaw = revalDetect.RawText ?? revalDetect.ObservedText ?? string.Empty;
-            var revalExtraction = context.CommandPromptParser.Parse(revalRaw, Rule.ExpectedPrompt, Rule.ExpectedSelectedOption);
+            var revalExtraction = context.CommandPromptParser.Parse(revalRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
             var revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
 
-            // Re-evaluate complete rule with fresh process identity and fresh snapshot
-            var revalDecision = CommandApprovalEvaluator.Evaluate(Rule, revalSnapshot, freshProc, freshClass);
+            // Re-evaluate complete rule set with fresh process identity and fresh snapshot
+            var revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass);
             if (!revalDecision.IsAllowed)
             {
                 context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
@@ -385,12 +443,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
                 // If prompt text matched, check if the specific command or selected option changed
                 string ackRaw = ackDetect.RawText ?? ackDetect.ObservedText ?? string.Empty;
-                var currentExtraction = context.CommandPromptParser.Parse(ackRaw, Rule.ExpectedPrompt, Rule.ExpectedSelectedOption);
+                var currentExtraction = context.CommandPromptParser.Parse(ackRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
                 if (!currentExtraction.Success ||
                     !string.Equals(currentExtraction.CommandText, initialCmd, StringComparison.OrdinalIgnoreCase) ||
                     !string.Equals(currentExtraction.SelectedOptionText, initialOpt, StringComparison.OrdinalIgnoreCase))
                 {
-                    // Fingerprint changed! Command A was dismissed or replaced by subsequent prompt
+                    // Fingerprint changed! Command was dismissed or replaced by subsequent prompt
                     promptAcknowledged = true;
                     break;
                 }
@@ -402,8 +460,11 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
             }
 
+            string matchedRuleMsg = !string.IsNullOrEmpty(revalDecision.MatchedRuleName)
+                ? $" using rule '{revalDecision.MatchedRuleName}'"
+                : string.Empty;
             context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
-            return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\" via rule '{Rule.Name}'.");
+            return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\"{matchedRuleMsg}.");
         }
         finally
         {

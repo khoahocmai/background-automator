@@ -1,4 +1,4 @@
-﻿using BackgroundAutomator.Core.Capture;
+using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
 using BackgroundAutomator.Core.Macro;
 using BackgroundAutomator.Core.Targeting;
@@ -191,5 +191,102 @@ public class MacroRunnerTests
         Assert.Equal(failureStatus, result.FinalStatus);
         Assert.Equal(1, result.CompletedActionsCount);
         Assert.DoesNotContain("Start:Action3", executionLog);
+    }
+
+    [Fact]
+    public async Task MacroRunner_RepeatMode_Count_ExecutesExactNumberOfCycles()
+    {
+        using var runner = new MacroRunner();
+        var executionLog = new List<string>();
+        var startingCycles = new List<int>();
+        var completedCycles = new List<int>();
+
+        runner.CycleStarting += c => startingCycles.Add(c);
+        runner.CycleCompleted += c => completedCycles.Add(c);
+
+        var action1 = new ActionTracker("Action1", executionLog);
+        var action2 = new ActionTracker("Action2", executionLog);
+        var actions = new[] { action1, action2 };
+        var context = new MacroExecutionContext(new DummyClicker(), new DummyCaptureService());
+
+        var settings = new MacroRunnerSettings(
+            RepeatMode: MacroRepeatMode.Count,
+            RepeatCount: 3,
+            CycleDelayMilliseconds: 10);
+
+        var result = await runner.RunAsync(actions, context, settings);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(3, result.CompletedCyclesCount);
+        Assert.Equal(6, result.CompletedActionsCount);
+        Assert.Equal(6, result.TotalActionsCount);
+
+        Assert.Equal(new[] { 1, 2, 3 }, startingCycles);
+        Assert.Equal(new[] { 1, 2, 3 }, completedCycles);
+        Assert.Equal(6, executionLog.Count(s => s.StartsWith("Start:")));
+    }
+
+    [Fact]
+    public async Task MacroRunner_RepeatMode_UntilStopped_ExecutesUntilCancelled()
+    {
+        using var runner = new MacroRunner();
+        var executionLog = new List<string>();
+        int cyclesCompleted = 0;
+        using var cts = new CancellationTokenSource();
+
+        runner.CycleCompleted += c =>
+        {
+            cyclesCompleted = c;
+            if (c >= 3)
+            {
+                cts.Cancel();
+            }
+        };
+
+        var action = new ActionTracker("Action", executionLog);
+        var context = new MacroExecutionContext(new DummyClicker(), new DummyCaptureService());
+
+        var settings = new MacroRunnerSettings(
+            RepeatMode: MacroRepeatMode.UntilStopped,
+            CycleDelayMilliseconds: 10);
+
+        var result = await runner.RunAsync(new[] { action }, context, settings, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.FinalStatus);
+        Assert.True(result.CompletedCyclesCount >= 3);
+        Assert.Equal(MacroRunnerState.Idle, runner.State);
+    }
+
+    [Fact]
+    public async Task MacroRunner_RepeatMode_FailureDuringCycle_HaltsFurtherCycles()
+    {
+        using var runner = new MacroRunner();
+        var executionLog = new List<string>();
+
+        // Custom action that fails on second cycle
+        var customAction = new ActionTracker("FlakyAction", executionLog);
+        var dummyAction = new ActionTracker("Action2", executionLog);
+
+        var context = new MacroExecutionContext(new DummyClicker(), new DummyCaptureService());
+
+        runner.CycleStarting += c =>
+        {
+            if (c == 2)
+            {
+                customAction.ResultToReturn = MacroActionResult.Timeout("Failed on cycle 2");
+            }
+        };
+
+        var settings = new MacroRunnerSettings(
+            RepeatMode: MacroRepeatMode.Count,
+            RepeatCount: 5,
+            CycleDelayMilliseconds: 10);
+
+        var result = await runner.RunAsync(new[] { customAction, dummyAction }, context, settings);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Timeout, result.FinalStatus);
+        Assert.Equal(1, result.CompletedCyclesCount); // Cycle 1 succeeded, cycle 2 failed at first action
+        Assert.Equal(2, result.CompletedActionsCount); // 2 actions from cycle 1
     }
 }
