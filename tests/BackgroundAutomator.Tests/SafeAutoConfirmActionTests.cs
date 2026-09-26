@@ -775,4 +775,117 @@ Run this command?
         Assert.Contains("Last blocker: CommandNotAllowed", result.Message);
         Assert.Contains("Blocked — Command not allowed", reportedStatuses);
     }
+
+    [Fact]
+    public async Task RuleSet_Approves_AllowedCommand_In_MultiRule_Set()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            if (detectCount >= 3)
+            {
+                // Prompt dismissed after Enter injection
+                return Task.FromResult(TextDetectionResult.NotFound());
+            }
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+
+        var rule1 = new CommandApprovalRule { Name = "Build", AllowedCommand = "dotnet build BackgroundAutomator.sln" };
+        var rule2 = new CommandApprovalRule { Name = "Test", AllowedCommand = "dotnet test BackgroundAutomator.sln" };
+        var rule3 = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+        var ruleSet = new ApprovalRuleSet("ToolSet", new[] { rule1, rule2, rule3 });
+
+        var action = new SafeAutoConfirmAction(
+            ruleSet,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(2),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Single approval invariant: exactly 1 Enter!
+        Assert.Contains("Get-Date", result.Message);
+        Assert.Contains("using rule 'Date'", result.Message);
+    }
+
+    [Fact]
+    public async Task WaitMode_Indefinite_DoesNotTimeout_And_Approves_When_Prompt_Appears()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+Requesting permission for:
+Get-Date
+
+Run this command?
+> 1. Yes, run command
+";
+        int callCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            callCount++;
+            // First 4 calls: no prompt
+            if (callCount <= 4)
+            {
+                return Task.FromResult(TextDetectionResult.NotFound());
+            }
+            // Next call: prompt visible
+            if (callCount <= 6)
+            {
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            // After Enter: prompt dismissed
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromMilliseconds(50), // Even though timeout is small, Indefinite wait ignores it
+            pollInterval: TimeSpan.FromMilliseconds(15),
+            waitMode: AutoConfirmWaitMode.Indefinite);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.True(callCount > 4);
+    }
+
+    [Fact]
+    public async Task WaitMode_Indefinite_CancelsCleanly_When_Cancelled()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.NotFound()));
+
+        var (context, _, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        var rule = new CommandApprovalRule { Name = "Date", AllowedCommand = "Get-Date" };
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            waitMode: AutoConfirmWaitMode.Indefinite);
+
+        using var cts = new CancellationTokenSource(60);
+
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
 }

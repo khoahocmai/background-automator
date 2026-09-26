@@ -155,4 +155,73 @@ public class CommandApprovalEvaluatorTests
         Assert.Equal(ApprovalBlockReason.AmbiguousPrompt, decision.BlockReason);
         Assert.Contains("Multiple candidate commands", decision.Explanation);
     }
+
+    [Fact]
+    public void Evaluator_RuleSet_Allows_Matching_Command_And_Identifies_Rule()
+    {
+        var rule1 = new CommandApprovalRule { Name = "Build", AllowedCommand = "dotnet build BackgroundAutomator.sln" };
+        var rule2 = new CommandApprovalRule { Name = "Test", AllowedCommand = "dotnet test BackgroundAutomator.sln" };
+        var rule3 = new CommandApprovalRule { Name = "Git Status", AllowedCommand = "git status" };
+
+        var ruleSet = new ApprovalRuleSet("Dev Tools", new[] { rule1, rule2, rule3 });
+        var snapshot = CreateValidSnapshot() with { CommandText = "dotnet test BackgroundAutomator.sln" };
+
+        var decision = CommandApprovalEvaluator.Evaluate(ruleSet, snapshot, "WindowsTerminal.exe", "CASCADIA");
+
+        Assert.True(decision.IsAllowed);
+        Assert.Null(decision.BlockReason);
+        Assert.Equal("Test", decision.MatchedRuleName);
+        Assert.Equal(rule2.Id, decision.MatchedRuleId);
+        Assert.Contains("explicitly approved by rule 'Test'", decision.Explanation);
+    }
+
+    [Fact]
+    public void Evaluator_RuleSet_Blocks_When_No_Rule_Matches()
+    {
+        var rule1 = new CommandApprovalRule { Name = "Build", AllowedCommand = "dotnet build" };
+        var rule2 = new CommandApprovalRule { Name = "Test", AllowedCommand = "dotnet test" };
+
+        var ruleSet = new ApprovalRuleSet("Dev Tools", new[] { rule1, rule2 });
+        var snapshot = CreateValidSnapshot() with { CommandText = "rm -rf /" };
+
+        var decision = CommandApprovalEvaluator.Evaluate(ruleSet, snapshot, "WindowsTerminal.exe", "CASCADIA");
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.CommandNotAllowed, decision.BlockReason);
+        Assert.Contains("not allowed by any rule in set 'Dev Tools'", decision.Explanation);
+    }
+
+    [Fact]
+    public void Evaluator_RuleSet_Ignores_Disabled_Rules()
+    {
+        var rule1 = new CommandApprovalRule { Name = "Disabled Git", AllowedCommand = "git push", Enabled = false };
+        var rule2 = new CommandApprovalRule { Name = "Enabled Git", AllowedCommand = "git status", Enabled = true };
+
+        var ruleSet = new ApprovalRuleSet("Git", new[] { rule1, rule2 });
+        var snapshot = CreateValidSnapshot() with { CommandText = "git push" };
+
+        var decision = CommandApprovalEvaluator.Evaluate(ruleSet, snapshot, "WindowsTerminal.exe", "CASCADIA");
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.CommandNotAllowed, decision.BlockReason);
+    }
+
+    [Fact]
+    public void Evaluator_RuleSet_Blocks_When_Snapshot_Is_Ambiguous()
+    {
+        var rule1 = new CommandApprovalRule { Name = "Allowed", AllowedCommand = "Get-Date" };
+        var ruleSet = new ApprovalRuleSet("Tools", new[] { rule1 });
+
+        var snapshot = CreateValidSnapshot() with
+        {
+            CommandText = "Get-Date",
+            IsAmbiguous = true,
+            AmbiguityReason = "Multiple candidate commands detected"
+        };
+
+        var decision = CommandApprovalEvaluator.Evaluate(ruleSet, snapshot, "WindowsTerminal.exe", "CASCADIA");
+
+        Assert.False(decision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.AmbiguousPrompt, decision.BlockReason);
+    }
 }

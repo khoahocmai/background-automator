@@ -7,6 +7,11 @@ namespace BackgroundAutomator.Core.Approval;
 public sealed record CommandApprovalRule
 {
     /// <summary>
+    /// Unique identifier for this rule.
+    /// </summary>
+    public Guid Id { get; init; } = Guid.NewGuid();
+
+    /// <summary>
     /// Friendly descriptive name for this rule (e.g. "Approve BackgroundAutomator tests").
     /// </summary>
     public string Name { get; init; } = string.Empty;
@@ -35,6 +40,11 @@ public sealed record CommandApprovalRule
     /// Explicit allowlisted command required to authorize execution (e.g. "dotnet test BackgroundAutomator.sln").
     /// </summary>
     public string AllowedCommand { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Alias for AllowedCommand.
+    /// </summary>
+    public string CommandText => AllowedCommand;
 
     /// <summary>
     /// Command comparison mode (Exact). Wildcards are intentionally not supported in Phase 4.

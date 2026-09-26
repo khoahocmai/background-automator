@@ -1,7 +1,7 @@
 namespace BackgroundAutomator.Core.Approval;
 
 /// <summary>
-/// Evaluates live confirmation prompt snapshots against configured CommandApprovalRules.
+/// Evaluates live confirmation prompt snapshots against configured CommandApprovalRules or ApprovalRuleSets.
 /// Implements strict fail-closed safety semantics.
 /// </summary>
 public static class CommandApprovalEvaluator
@@ -107,6 +107,118 @@ public static class CommandApprovalEvaluator
         }
 
         return ApprovalDecision.Allowed(
-            $"Command \"{extracted}\" explicitly approved by rule '{rule.Name}'.");
+            $"Command \"{extracted}\" explicitly approved by rule '{rule.Name}'.",
+            rule.Id,
+            rule.Name);
+    }
+
+    /// <summary>
+    /// Evaluates whether the current prompt snapshot meets all safety criteria of the approval rule set.
+    /// </summary>
+    /// <param name="ruleSet">Configured approval rule set.</param>
+    /// <param name="snapshot">Snapshot of current terminal prompt state.</param>
+    /// <param name="actualProcessName">Actual process name of target window.</param>
+    /// <param name="actualWindowClass">Actual window class name of target window.</param>
+    /// <returns>An <see cref="ApprovalDecision"/> indicating Allowed or Blocked with reason.</returns>
+    public static ApprovalDecision Evaluate(
+        ApprovalRuleSet ruleSet,
+        CommandPromptSnapshot snapshot,
+        string? actualProcessName = null,
+        string? actualWindowClass = null)
+    {
+        if (ruleSet == null)
+            throw new ArgumentNullException(nameof(ruleSet));
+        if (snapshot == null)
+            throw new ArgumentNullException(nameof(snapshot));
+
+        // 0. Ambiguity check: fail closed if multiple plausible candidates or conflicting prompts detected
+        if (snapshot.IsAmbiguous)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.AmbiguousPrompt,
+                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+        }
+
+        // 1. Target process matching
+        if (!string.IsNullOrWhiteSpace(ruleSet.ExpectedProcess) && !string.IsNullOrWhiteSpace(actualProcessName))
+        {
+            string expectedProc = Path.GetFileNameWithoutExtension(ruleSet.ExpectedProcess.Trim());
+            string actualProc = Path.GetFileNameWithoutExtension(actualProcessName.Trim());
+
+            if (!string.Equals(expectedProc, actualProc, StringComparison.OrdinalIgnoreCase))
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.TargetMismatch,
+                    $"Target process '{actualProcessName}' does not match expected '{ruleSet.ExpectedProcess}'.");
+            }
+        }
+
+        // 2. Window class matching (optional)
+        if (!string.IsNullOrWhiteSpace(ruleSet.ExpectedWindowClass) && !string.IsNullOrWhiteSpace(actualWindowClass))
+        {
+            if (!actualWindowClass.Contains(ruleSet.ExpectedWindowClass.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.TargetMismatch,
+                    $"Window class '{actualWindowClass}' does not match expected '{ruleSet.ExpectedWindowClass}'.");
+            }
+        }
+
+        // 3. Approval prompt visibility
+        if (!snapshot.IsApprovalPromptVisible)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.PromptNotVisible,
+                $"Confirmation prompt '{ruleSet.ExpectedPrompt}' is not visible.");
+        }
+
+        // 4. Expected approval option selection
+        if (!snapshot.IsYesOptionSelected)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.OptionNotSelected,
+                $"Expected option '{ruleSet.ExpectedSelectedOption}' is not currently selected.");
+        }
+
+        // 5. Command availability
+        if (string.IsNullOrWhiteSpace(snapshot.CommandText))
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.CommandNotFound,
+                "Could not extract command from visible prompt area.");
+        }
+
+        // 6. Explicit command allowlist matching across enabled rules in the set (Exact mode)
+        var enabledRules = ruleSet.Rules.Where(r => r.Enabled).ToList();
+        if (enabledRules.Count == 0)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.CommandNotAllowed,
+                $"Rule set '{ruleSet.Name}' contains no enabled rules.");
+        }
+
+        string extracted = snapshot.CommandText.Trim();
+
+        foreach (var rule in enabledRules)
+        {
+            string allowed = rule.AllowedCommand?.Trim() ?? string.Empty;
+            bool matches = rule.CommandMatchMode switch
+            {
+                CommandMatchMode.Exact => string.Equals(extracted, allowed, StringComparison.OrdinalIgnoreCase),
+                _ => string.Equals(extracted, allowed, StringComparison.OrdinalIgnoreCase)
+            };
+
+            if (matches)
+            {
+                return ApprovalDecision.Allowed(
+                    $"Command \"{extracted}\" explicitly approved by rule '{rule.Name}'.",
+                    rule.Id,
+                    rule.Name);
+            }
+        }
+
+        return ApprovalDecision.Blocked(
+            ApprovalBlockReason.CommandNotAllowed,
+            $"Extracted command \"{extracted}\" is not allowed by any rule in set '{ruleSet.Name}'.");
     }
 }
