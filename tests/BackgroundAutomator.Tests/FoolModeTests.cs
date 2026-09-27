@@ -842,4 +842,78 @@ Run this command?
         Assert.Contains("[FOOL MODE]", result.Message);
         Assert.Equal(1, fgKeyboard.SendEnterCallCount);
     }
+
+    // 28. FOOL MODE authorization survives transient pause and is revoked on stop / unauthorized run.
+    [Fact]
+    public async Task Test28_FoolMode_Authorization_SurvivesTransientPause_AndFailsWhenUnauthorized()
+    {
+        string wrappedViewport = @"
+Requesting permission for:
+git ls-files | Where-Object { $_ -match '(bin/|obj/)' }
+
+Run this command?
+> 1. Yes, run command
+  2. Cancel
+";
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var fgService = new FakeForegroundService
+        {
+            CurrentForeground = (IntPtr)0x9999,
+            IsMinimized = true // Minimized initially -> triggers transient pause
+        };
+        var fgKeyboard = new FakeForegroundKeyboard();
+
+        var detector = new FakeTextDetector();
+        detector.EnqueueResult(wrappedViewport);
+        detector.EnqueueResult(wrappedViewport);
+        detector.EnqueueNotFound(); // prompt dismissed after Enter
+
+        // Session authorized
+        var context = new MacroExecutionContext(
+            new FakeClicker(),
+            new FakeCapture(),
+            _logger,
+            targetHwnd,
+            new FakeKeyboard(),
+            detector,
+            fgKeyboard,
+            fgService)
+        {
+            IsFoolModeAuthorized = true
+        };
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            policyMode: ApprovalPolicyMode.FoolMode,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        // Restore window after 100ms
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.IsMinimized = false;
+        });
+
+        // Run 1: Survives transient pause and executes
+        var result1 = await action.ExecuteAsync(context, CancellationToken.None);
+        Assert.True(result1.IsSuccess);
+        Assert.Equal(1, fgKeyboard.SendEnterCallCount);
+
+        // Run 2: Simulating new session after Stop / termination where IsFoolModeAuthorized is reset to false
+        context.IsFoolModeAuthorized = false;
+        var result2 = await action.ExecuteAsync(context, CancellationToken.None);
+        Assert.False(result2.IsSuccess);
+        Assert.Equal(MacroActionStatus.ApprovalBlocked, result2.Status);
+        Assert.Contains("requires explicit user authorization", result2.Message);
+        Assert.Equal(1, fgKeyboard.SendEnterCallCount); // No new Enter sent!
+    }
 }

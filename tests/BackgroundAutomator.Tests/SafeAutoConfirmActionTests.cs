@@ -1237,4 +1237,252 @@ Run this command?
         // Single approval invariant: exactly 1 Enter! B must NOT be approved
         Assert.Equal(1, fgKb.SendEnterCallCount);
     }
+
+    [Fact]
+    public async Task ForegroundRetry_PromptDisappears_AbortsRetry_ZeroEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+
+        int callCount = 0;
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        fgService.ShouldFailActivation = true; // Foreground cannot be acquired
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                // First call: prompt visible
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            }
+            // While waiting for foreground, prompt disappears
+            return Task.FromResult(TextDetectionResult.NotFound(""));
+        });
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromMilliseconds(700),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        // Timed out because prompt disappeared while waiting for foreground and never returned
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Timeout, result.Status);
+        Assert.Equal(0, fgKb.SendEnterCallCount); // Zero Enter sent
+    }
+
+    [Fact]
+    public async Task ForegroundRetry_PromptChangesFromAToB_AbortsRetry_ZeroEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptA = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+        string promptB = @"
+rm -rf /unauthorized
+
+Run this command?
+> 1. Yes, run command
+";
+
+        int callCount = 0;
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        fgService.ShouldFailActivation = true; // Foreground cannot be acquired initially
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                return Task.FromResult(TextDetectionResult.Success(promptA, promptA));
+            }
+            // Prompt changed to unauthorized command B while waiting for foreground
+            return Task.FromResult(TextDetectionResult.Success(promptB, promptB));
+        });
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromMilliseconds(700),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Timeout, result.Status);
+        Assert.Equal(0, fgKb.SendEnterCallCount); // Zero Enter dispatched for Prompt A or B
+    }
+
+    [Fact]
+    public async Task ForegroundRetry_TargetMinimized_TransitionsToPaused_AndResumesWhenRestored()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        fgService.ShouldFailActivation = true; // Initial activation fails
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKb.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound());
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var progressList = new List<string>();
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+        context.ProgressCallback = p => progressList.Add(p);
+
+        // Simulate target becoming minimized during foreground retry, then restored and focus acquired
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.IsMinimized = true;
+            await Task.Delay(600); // Wait long enough so loop evaluates IsWindowMinimized while true
+            fgService.IsMinimized = false;
+            fgService.ShouldFailActivation = false;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Waiting for Terminal focus"));
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Target minimized"));
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Exactly 1 Enter sent
+    }
+
+    [Fact]
+    public async Task TargetDestroyed_DuringMinimizedPause_ReturnsTargetUnavailable_ZeroEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        fgService.IsMinimized = true; // Minimized at start
+
+        var detector = new FakeTextDetector((hwnd, req) => Task.FromResult(TextDetectionResult.NotFound()));
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        // Destroy target window after 100ms while paused
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.WindowClosed = true;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.TargetUnavailable, result.Status);
+        Assert.Contains("closed while minimized", result.Message);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task TargetDestroyed_DuringForegroundWait_ReturnsTargetUnavailable_ZeroEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        fgService.ShouldFailActivation = true; // Fails activation to enter foreground retry
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        // Destroy target window after 100ms during foreground acquisition
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.WindowClosed = true;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.TargetUnavailable, result.Status);
+        Assert.Contains("closed during foreground acquisition", result.Message);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
 }
