@@ -42,35 +42,51 @@
         </ui:Card>
 
         <!-- Log Viewer List -->
-        <ui:Card Grid.Row="1" Padding="12">
+        <ui:Card Grid.Row="1" Padding="8">
             <ListBox x:Name="LogListBox"
                      ItemsSource="{Binding FilteredEntries}"
                      FontFamily="Consolas"
                      FontSize="12"
                      HorizontalContentAlignment="Stretch"
                      ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                     ScrollViewer.VerticalScrollBarVisibility="Auto">
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.CanContentScroll="True"
+                     VirtualizingPanel.IsVirtualizing="True"
+                     VirtualizingPanel.VirtualizationMode="Recycling">
+                <ListBox.ItemContainerStyle>
+                    <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                        <Setter Property="Padding" Value="6,2,6,2" />
+                        <Setter Property="MinHeight" Value="24" />
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                        <Setter Property="VerticalContentAlignment" Value="Center" />
+                    </Style>
+                </ListBox.ItemContainerStyle>
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <Grid Margin="0,2">
+                        <Grid Margin="0" VerticalAlignment="Center">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="90" />
-                                <ColumnDefinition Width="55" />
+                                <ColumnDefinition Width="120" />
+                                <ColumnDefinition Width="70" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
 
                             <TextBlock Grid.Column="0"
                                        Text="{Binding TimestampFormatted}"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,12,0"
                                        Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
 
                             <TextBlock Grid.Column="1"
                                        Text="{Binding LevelString}"
                                        Foreground="{Binding LevelColor}"
-                                       FontWeight="Bold" />
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,12,0" />
 
                             <TextBlock Grid.Column="2"
                                        Text="{Binding Message}"
-                                       TextWrapping="Wrap" />
+                                       TextWrapping="NoWrap"
+                                       VerticalAlignment="Center" />
                         </Grid>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
