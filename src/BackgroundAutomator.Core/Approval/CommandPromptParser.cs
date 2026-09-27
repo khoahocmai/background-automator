@@ -135,10 +135,22 @@ public sealed class CommandPromptParser : ICommandPromptParser
         {
             if (PermissionHeaderRegex.IsMatch(lines[i]))
             {
+                var malformed = new PermissionPromptEnvelope(
+                    IsStructurallyValid: false,
+                    RawCommandBlock: null,
+                    NormalizedCommandBlock: null,
+                    PromptText: promptText,
+                    SelectedOptionText: selectedOptionText,
+                    IsApprovalPromptVisible: true,
+                    IsYesOptionSelected: isSelected,
+                    IsAmbiguous: true,
+                    AmbiguityReason: "Malformed prompt boundaries: 'Requesting permission for:' marker detected below prompt.");
+
                 return CommandExtractionResult.Ambiguous(
                     "Malformed prompt boundaries: 'Requesting permission for:' marker detected below prompt.",
                     promptText,
-                    selectedOptionText);
+                    selectedOptionText,
+                    malformed);
             }
         }
 
@@ -154,10 +166,22 @@ public sealed class CommandPromptParser : ICommandPromptParser
 
         if (permIndices.Count > 1)
         {
+            var malformed = new PermissionPromptEnvelope(
+                IsStructurallyValid: false,
+                RawCommandBlock: null,
+                NormalizedCommandBlock: null,
+                PromptText: promptText,
+                SelectedOptionText: selectedOptionText,
+                IsApprovalPromptVisible: true,
+                IsYesOptionSelected: isSelected,
+                IsAmbiguous: true,
+                AmbiguityReason: $"Malformed prompt boundaries: multiple 'Requesting permission for:' markers ({permIndices.Count}) detected before prompt.");
+
             return CommandExtractionResult.Ambiguous(
                 $"Malformed prompt boundaries: multiple 'Requesting permission for:' markers ({permIndices.Count}) detected before prompt.",
                 promptText,
-                selectedOptionText);
+                selectedOptionText,
+                malformed);
         }
 
         if (permIndices.Count == 1)
@@ -179,35 +203,105 @@ public sealed class CommandPromptParser : ICommandPromptParser
                 sectionLines.Add((line, i));
             }
 
-            var permCandidates = ExtractCandidatesFromPermissionSection(sectionLines, rawLines, out string? permParseError);
-
-            if (!string.IsNullOrEmpty(permParseError))
+            if (sectionLines.Count == 0)
             {
-                return CommandExtractionResult.Ambiguous(
-                    $"Permission section could not be parsed reliably: {permParseError}",
-                    promptText,
-                    selectedOptionText);
-            }
+                var emptyEnvelope = new PermissionPromptEnvelope(
+                    IsStructurallyValid: false,
+                    RawCommandBlock: string.Empty,
+                    NormalizedCommandBlock: string.Empty,
+                    PromptText: promptText,
+                    SelectedOptionText: selectedOptionText,
+                    IsApprovalPromptVisible: true,
+                    IsYesOptionSelected: isSelected,
+                    ParseFailureReason: "No command candidate found inside permission section.");
 
-            if (permCandidates.Count == 0)
-            {
                 return CommandExtractionResult.Failed(
                     "No command candidate found inside permission section.",
                     isPromptVisible: true,
                     isOptionSelected: true,
                     promptText: promptText,
-                    selectedOptionText: selectedOptionText);
+                    selectedOptionText: selectedOptionText,
+                    envelope: emptyEnvelope);
+            }
+
+            var (rawBlock, normBlock) = BuildCommandBlocks(sectionLines);
+            var permCandidates = ExtractCandidatesFromPermissionSection(sectionLines, rawLines, out string? permParseError);
+
+            if (!string.IsNullOrEmpty(permParseError))
+            {
+                var errorEnvelope = new PermissionPromptEnvelope(
+                    IsStructurallyValid: false,
+                    RawCommandBlock: rawBlock,
+                    NormalizedCommandBlock: normBlock,
+                    PromptText: promptText,
+                    SelectedOptionText: selectedOptionText,
+                    IsApprovalPromptVisible: true,
+                    IsYesOptionSelected: isSelected,
+                    ParseFailureReason: permParseError,
+                    IsAmbiguous: true,
+                    AmbiguityReason: $"Permission section could not be parsed reliably: {permParseError}");
+
+                return CommandExtractionResult.Ambiguous(
+                    $"Permission section could not be parsed reliably: {permParseError}",
+                    promptText,
+                    selectedOptionText,
+                    errorEnvelope);
+            }
+
+            if (permCandidates.Count == 0)
+            {
+                var noCandEnvelope = new PermissionPromptEnvelope(
+                    IsStructurallyValid: false,
+                    RawCommandBlock: rawBlock,
+                    NormalizedCommandBlock: normBlock,
+                    PromptText: promptText,
+                    SelectedOptionText: selectedOptionText,
+                    IsApprovalPromptVisible: true,
+                    IsYesOptionSelected: isSelected,
+                    ParseFailureReason: "No command candidate found inside permission section.");
+
+                return CommandExtractionResult.Failed(
+                    "No command candidate found inside permission section.",
+                    isPromptVisible: true,
+                    isOptionSelected: true,
+                    promptText: promptText,
+                    selectedOptionText: selectedOptionText,
+                    envelope: noCandEnvelope);
             }
 
             if (permCandidates.Count > 1)
             {
+                var multiEnvelope = new PermissionPromptEnvelope(
+                    IsStructurallyValid: true,
+                    RawCommandBlock: rawBlock,
+                    NormalizedCommandBlock: normBlock,
+                    PromptText: promptText,
+                    SelectedOptionText: selectedOptionText,
+                    IsApprovalPromptVisible: true,
+                    IsYesOptionSelected: isSelected,
+                    ParsedCommand: null,
+                    ParseFailureReason: $"Multiple conflicting command candidates ({permCandidates.Count}) detected inside permission section.",
+                    IsAmbiguous: true,
+                    AmbiguityReason: $"Multiple conflicting command candidates ({permCandidates.Count}) detected inside permission section.");
+
                 return CommandExtractionResult.Ambiguous(
                     $"Multiple conflicting command candidates ({permCandidates.Count}) detected inside permission section.",
                     promptText,
-                    selectedOptionText);
+                    selectedOptionText,
+                    multiEnvelope);
             }
 
-            return CommandExtractionResult.Successful(permCandidates[0], promptText, selectedOptionText!);
+            var validEnvelope = new PermissionPromptEnvelope(
+                IsStructurallyValid: true,
+                RawCommandBlock: rawBlock,
+                NormalizedCommandBlock: normBlock,
+                PromptText: promptText,
+                SelectedOptionText: selectedOptionText,
+                IsApprovalPromptVisible: true,
+                IsYesOptionSelected: isSelected,
+                ParsedCommand: permCandidates[0]);
+
+            return CommandExtractionResult.Successful(permCandidates[0], promptText, selectedOptionText!, validEnvelope);
         }
 
         // 4. Fallback Extraction: Check Zone A (between prompt and options)
@@ -412,8 +506,9 @@ public sealed class CommandPromptParser : ICommandPromptParser
                 bool hasExplicitContinuation = prevLine.EndsWith("|") || prevLine.EndsWith("`") || prevLine.EndsWith("\\");
                 string rawNext = nextOrig < rawLines.Length ? rawLines[nextOrig] : string.Empty;
                 bool isIndented = rawNext.StartsWith("  ") || rawNext.StartsWith("\t");
+                bool hasUnclosed = HasUnclosedTokens(string.Join(" ", rawCmdLines));
 
-                if (hasExplicitContinuation || isIndented)
+                if (hasExplicitContinuation || isIndented || hasUnclosed)
                 {
                     rawCmdLines.Add(nextLine);
                     i++;
@@ -732,5 +827,89 @@ public sealed class CommandPromptParser : ICommandPromptParser
         }
 
         return line.Trim();
+    }
+
+    private static (string Raw, string Normalized) BuildCommandBlocks(List<(string Clean, int OriginalIndex)> sectionLines)
+    {
+        var cleanLines = sectionLines.Select(s => s.Clean).ToList();
+        string raw = string.Join("\n", cleanLines);
+
+        // Check if enclosed in markdown code fences:
+        if (cleanLines.Count >= 2 && cleanLines[0].StartsWith("```") && cleanLines[^1].EndsWith("```"))
+        {
+            var inner = cleanLines.Skip(1).Take(cleanLines.Count - 2).ToList();
+            string innerRaw = string.Join("\n", inner);
+            string innerNorm = string.Join(" ", inner);
+            return (innerRaw, innerNorm);
+        }
+
+        // Check if starts with tool wrapper Bash( and ends with )
+        if (cleanLines.Count >= 1 && ToolWrapperStartRegex.IsMatch(cleanLines[0]) && cleanLines[^1].EndsWith(")"))
+        {
+            var unwrapLines = new List<string>();
+            int openParen = cleanLines[0].IndexOf('(');
+            string first = openParen >= 0 ? cleanLines[0].Substring(openParen + 1).Trim() : string.Empty;
+            if (!string.IsNullOrEmpty(first)) unwrapLines.Add(first);
+
+            for (int k = 1; k < cleanLines.Count - 1; k++)
+            {
+                unwrapLines.Add(cleanLines[k]);
+            }
+
+            if (cleanLines.Count > 1)
+            {
+                string last = cleanLines[^1];
+                int closeParen = last.LastIndexOf(')');
+                string endPart = closeParen > 0 ? last.Substring(0, closeParen).Trim() : string.Empty;
+                if (!string.IsNullOrEmpty(endPart)) unwrapLines.Add(endPart);
+            }
+
+            string unwrappedRaw = string.Join("\n", unwrapLines);
+            string unwrappedNorm = string.Join(" ", unwrapLines);
+            return (unwrappedRaw, unwrappedNorm);
+        }
+
+        string normalized = string.Join(" ", cleanLines);
+        return (raw, normalized);
+    }
+
+    private static bool HasUnclosedTokens(string text)
+    {
+        int paren = 0;
+        int brace = 0;
+        int bracket = 0;
+        bool inSingleQuote = false;
+        bool inDoubleQuote = false;
+
+        for (int k = 0; k < text.Length; k++)
+        {
+            char c = text[k];
+            if (c == '\'' && !inDoubleQuote)
+            {
+                inSingleQuote = !inSingleQuote;
+            }
+            else if (c == '"' && !inSingleQuote)
+            {
+                if (k > 0 && (text[k - 1] == '`' || text[k - 1] == '\\'))
+                {
+                    // escaped quote
+                }
+                else
+                {
+                    inDoubleQuote = !inDoubleQuote;
+                }
+            }
+            else if (!inSingleQuote && !inDoubleQuote)
+            {
+                if (c == '(') paren++;
+                else if (c == ')' && paren > 0) paren--;
+                else if (c == '{') brace++;
+                else if (c == '}' && brace > 0) brace--;
+                else if (c == '[') bracket++;
+                else if (c == ']' && bracket > 0) bracket--;
+            }
+        }
+
+        return paren > 0 || brace > 0 || bracket > 0 || inSingleQuote || inDoubleQuote;
     }
 }

@@ -238,29 +238,84 @@ Run this command?
 > 1. Yes, run command
 ";
 
+        var (context, fgService, fgKb, elevService) = CreateTestContext(null!, targetHwnd);
         var detector = new FakeTextDetector((hwnd, req) =>
-            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+        {
+            if (fgKb.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound());
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
 
-        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
-        fgService.ShouldFailActivation = true; // SetForegroundWindow fails
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector,
+            elevationService: elevService);
+
+        fgService.ShouldFailActivation = true; // First attempt fails
         var rule = CreateRule();
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        // After 100ms, simulate activation succeeding on retry
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.ShouldFailActivation = false;
+        });
 
         var action = new SafeAutoConfirmAction(
             rule,
             executionMode: AutoConfirmExecutionMode.Confirm,
-            timeout: TimeSpan.FromSeconds(2),
+            timeout: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromMilliseconds(20));
 
         var result = await action.ExecuteAsync(context, CancellationToken.None);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(MacroActionStatus.ApprovalBlocked, result.Status);
-        Assert.Contains("ForegroundActivationFailed", result.Message);
+        Assert.True(result.IsSuccess);
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Waiting for Terminal focus"));
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task Confirm_ForegroundActivation_Cancelled_DoesNotSendEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        fgService.ShouldFailActivation = true; // Activation fails permanently
+        var rule = CreateRule();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
         Assert.Equal(0, fgKb.SendEnterCallCount);
     }
 
     [Fact]
-    public async Task Confirm_ForegroundChanged_ImmediatelyBeforeSendInput_Aborts_DoesNotSendEnter()
+    public async Task Confirm_ForegroundChanged_ImmediatelyBeforeSendInput_RetriesAndSendsEnterOnce()
     {
         IntPtr targetHwnd = (IntPtr)0x1111;
         IntPtr thirdPartyHwnd = (IntPtr)0x5555;
@@ -279,9 +334,11 @@ Run this command?
             callCount++;
             if (callCount == 2)
             {
-                // Simulate focus stealing right after revalidation
+                // Simulate focus stealing right after revalidation on first attempt
                 fgService.CurrentForeground = thirdPartyHwnd;
             }
+            if (fgKb.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound());
             return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
         });
 
@@ -300,15 +357,13 @@ Run this command?
         var action = new SafeAutoConfirmAction(
             rule,
             executionMode: AutoConfirmExecutionMode.Confirm,
-            timeout: TimeSpan.FromSeconds(2),
+            timeout: TimeSpan.FromSeconds(5),
             pollInterval: TimeSpan.FromMilliseconds(20));
 
         var result = await action.ExecuteAsync(context, CancellationToken.None);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(MacroActionStatus.ApprovalBlocked, result.Status);
-        Assert.Contains("ForegroundChanged", result.Message);
-        Assert.Equal(0, fgKb.SendEnterCallCount);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
     }
 
     [Fact]
@@ -397,21 +452,71 @@ Run this command?
     }
 
     [Fact]
-    public async Task Target_Minimized_FailsClosed_TargetNotInteractable()
+    public async Task Target_Minimized_Pauses_AndResumesWhenRestored()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+";
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKb.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound());
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+        fgService.IsMinimized = true; // Minimized target initially!
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        // Simulate restore after 100ms
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.IsMinimized = false;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Target minimized"));
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task Target_Minimized_Cancelled_DoesNotSendEnter()
     {
         IntPtr targetHwnd = (IntPtr)0x1111;
         var detector = new FakeTextDetector((hwnd, req) => Task.FromResult(TextDetectionResult.Success("")));
         var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
-        fgService.IsMinimized = true; // Minimized target!
+        fgService.IsMinimized = true; // Minimized target
 
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
         var rule = CreateRule();
-        var action = new SafeAutoConfirmAction(rule, timeout: TimeSpan.FromSeconds(2));
+        var action = new SafeAutoConfirmAction(rule, timeout: TimeSpan.FromSeconds(5));
 
-        var result = await action.ExecuteAsync(context, CancellationToken.None);
+        var result = await action.ExecuteAsync(context, cts.Token);
 
-        Assert.False(result.IsSuccess);
-        Assert.Equal(MacroActionStatus.ApprovalBlocked, result.Status);
-        Assert.Contains("TargetNotInteractable", result.Message);
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
         Assert.Equal(0, fgKb.SendEnterCallCount);
     }
 

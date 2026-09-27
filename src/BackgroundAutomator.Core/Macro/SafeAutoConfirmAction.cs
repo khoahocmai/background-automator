@@ -146,13 +146,48 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} is invalid or closed.");
         }
 
-        // Section 18: Fail closed if target window is minimized
         IntPtr targetRootHwnd = context.ForegroundService.GetRootWindow(targetHwnd);
+        IntPtr effectiveRoot = targetRootHwnd != IntPtr.Zero ? targetRootHwnd : targetHwnd;
+
+        // Transient pause if target window is minimized at start
         if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
-            (targetRootHwnd != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(targetRootHwnd)))
+            (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
         {
-            context.Logger?.Warning("[AutoConfirm] Target window is minimized. Auto-confirm blocked: TargetNotInteractable.");
-            return MacroActionResult.ApprovalBlocked("Target window is minimized. TargetNotInteractable.");
+            string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                ? "[AutoConfirm][FOOL MODE] PAUSED — target window is minimized."
+                : "[AutoConfirm] PAUSED — target window is minimized.";
+            context.Logger?.Warning(warnMsg);
+            context.ReportProgress("PAUSED — Target minimized");
+
+            while (context.ForegroundService.IsWindow(targetHwnd) &&
+                   (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                    (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot))))
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    context.Logger?.Info("[AutoConfirm] Cancelled.");
+                    return MacroActionResult.Cancelled();
+                }
+                try
+                {
+                    await Task.Delay(250, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return MacroActionResult.Cancelled();
+                }
+            }
+
+            if (!context.ForegroundService.IsWindow(targetHwnd))
+            {
+                context.Logger?.Warning($"[AutoConfirm] Target HWND {HwndFormatter.Format(targetHwnd)} closed while minimized.");
+                return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed while minimized.");
+            }
+
+            string infoMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                ? "[AutoConfirm][FOOL MODE] Target window restored; resuming prompt evaluation."
+                : "[AutoConfirm] Target window restored; resuming prompt evaluation.";
+            context.Logger?.Info(infoMsg);
         }
 
         // Section 3: Check UIPI elevation compatibility before any foreground or input attempt
@@ -198,6 +233,50 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed during evaluation.");
             }
 
+            // Transient pause if target window is minimized during polling loop
+            if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+            {
+                sw.Stop();
+                string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "[AutoConfirm][FOOL MODE] PAUSED — target window is minimized."
+                    : "[AutoConfirm] PAUSED — target window is minimized.";
+                context.Logger?.Warning(warnMsg);
+                context.ReportProgress("PAUSED — Target minimized");
+
+                while (context.ForegroundService.IsWindow(targetHwnd) &&
+                       (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                        (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot))))
+                {
+                    if (ct.IsCancellationRequested)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Cancelled.");
+                        return MacroActionResult.Cancelled();
+                    }
+                    try
+                    {
+                        await Task.Delay(250, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                }
+
+                if (!context.ForegroundService.IsWindow(targetHwnd))
+                {
+                    context.Logger?.Warning($"[AutoConfirm] Target HWND {HwndFormatter.Format(targetHwnd)} closed while minimized.");
+                    return MacroActionResult.TargetUnavailable($"Target HWND {HwndFormatter.Format(targetHwnd)} closed while minimized.");
+                }
+
+                string infoMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "[AutoConfirm][FOOL MODE] Target window restored; resuming prompt evaluation."
+                    : "[AutoConfirm] Target window restored; resuming prompt evaluation.";
+                context.Logger?.Info(infoMsg);
+                sw.Start();
+                continue;
+            }
+
             TextDetectionResult detectResult;
             try
             {
@@ -230,49 +309,59 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
                 if (decision.IsAllowed)
                 {
+                    string commandDisplay = snapshot.CommandText
+                        ?? (snapshot.Envelope != null ? snapshot.Envelope.GetCommandPreview(100) : "[Unknown]");
+
                     if (PolicyMode == ApprovalPolicyMode.FoolMode)
                     {
                         context.Logger?.Info("[AutoConfirm][FOOL MODE] approval prompt detected");
-                        if (!string.IsNullOrWhiteSpace(snapshot.CommandText))
-                        {
-                            context.Logger?.Info($"[AutoConfirm][FOOL MODE] command: \"{snapshot.CommandText}\"");
-                        }
+                        context.Logger?.Info($"[AutoConfirm][FOOL MODE] command: \"{commandDisplay}\"");
 
                         // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
                         if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
                         {
-                            context.Logger?.Info($"[AutoConfirm][FOOL MODE] WOULD APPROVE: \"{snapshot.CommandText ?? "[Unknown]"}\"");
+                            context.Logger?.Info($"[AutoConfirm][FOOL MODE] WOULD APPROVE: \"{commandDisplay}\"");
                             return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
                         }
 
                         context.Logger?.Info("[AutoConfirm][FOOL MODE] unrestricted approval authorized for this runner session");
-                        context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{snapshot.CommandText ?? "[Unknown]"}\"");
+                        context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{commandDisplay}\"");
                     }
                     else
                     {
                         context.Logger?.Info("[AutoConfirm] approval prompt detected");
-                        context.Logger?.Info($"[AutoConfirm] command extracted: \"{snapshot.CommandText}\"");
+                        context.Logger?.Info($"[AutoConfirm] command extracted: \"{commandDisplay}\"");
                         string matchedRuleMsg = !string.IsNullOrEmpty(decision.MatchedRuleName)
                             ? $" using rule '{decision.MatchedRuleName}'"
                             : string.Empty;
-                        context.Logger?.Info($"[AutoConfirm] Approved command '{snapshot.CommandText}'{matchedRuleMsg}.");
+                        context.Logger?.Info($"[AutoConfirm] Approved command '{commandDisplay}'{matchedRuleMsg}.");
 
                         // 1. Observe-only mode: strictly passive (zero focus changes, zero keystrokes)
                         if (ExecutionMode == AutoConfirmExecutionMode.ObserveOnly)
                         {
-                            context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{snapshot.CommandText}\"{matchedRuleMsg}");
+                            context.Logger?.Info($"[AutoConfirm] WOULD APPROVE (ObserveOnly): \"{commandDisplay}\"{matchedRuleMsg}");
                             return MacroActionResult.Success($"WOULD APPROVE: {decision.Explanation}");
                         }
                     }
 
-                    // 2. Confirm mode: execute controlled foreground pulse
-                    return await ExecuteConfirmPulseAsync(
+                    // 2. Confirm mode: execute controlled foreground pulse with retry & transient pause
+                    sw.Stop();
+                    var pulseResult = await ExecuteConfirmPulseAsync(
                         context,
                         targetHwnd,
-                        targetRootHwnd,
+                        effectiveRoot,
                         request,
                         snapshot,
                         ct).ConfigureAwait(false);
+
+                    if (pulseResult != null)
+                    {
+                        return pulseResult;
+                    }
+
+                    // Foreground wait ended because prompt disappeared or changed; resume active wait loop
+                    sw.Start();
+                    continue;
                 }
                 else
                 {
@@ -332,24 +421,14 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         return MacroActionResult.Timeout(timeoutMsg, lastBlockReason?.ToString());
     }
 
-    private async Task<MacroActionResult> ExecuteConfirmPulseAsync(
+    private async Task<MacroActionResult?> ExecuteConfirmPulseAsync(
         MacroExecutionContext context,
         IntPtr targetHwnd,
-        IntPtr targetRootHwnd,
+        IntPtr effectiveRoot,
         TextDetectionRequest request,
         CommandPromptSnapshot initialSnapshot,
         CancellationToken ct)
     {
-        IntPtr effectiveRoot = targetRootHwnd != IntPtr.Zero ? targetRootHwnd : targetHwnd;
-
-        // Re-check minimized state before foreground pulse
-        if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
-            (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
-        {
-            context.Logger?.Warning("[AutoConfirm] Target window is minimized prior to foreground pulse. TargetNotInteractable.");
-            return MacroActionResult.ApprovalBlocked("Target window is minimized. TargetNotInteractable.");
-        }
-
         // Re-check UIPI compatibility before requesting foreground activation
         int pulsePid = context.ForegroundService.GetProcessId(targetHwnd);
         var pulseUipi = context.ElevationService.CheckCompatibility(pulsePid);
@@ -370,50 +449,184 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         bool foregroundRestored = false;
         bool wasActivated = false;
 
-        if (!isAlreadyForeground)
-        {
-            // Step 1: Request foreground activation of the terminal root window
-            bool activated = context.ForegroundService.ActivateWindow(effectiveRoot);
-            if (!activated)
-            {
-                context.Logger?.Warning("[AutoConfirm] Failed to activate terminal window. ForegroundActivationFailed.");
-                return MacroActionResult.ApprovalBlocked("Failed to request foreground activation of target terminal. ForegroundActivationFailed.");
-            }
-            wasActivated = true;
+        int retryIndex = 0;
+        int[] retryBackoffs = [500, 750, 1000];
+        bool foregroundAcquired = isAlreadyForeground;
+        bool pausedLogged = false;
 
-            // Step 2: Poll briefly until target/root window is confirmed as foreground
-            bool confirmedForeground = false;
-            var fgSw = Stopwatch.StartNew();
-            while (fgSw.ElapsedMilliseconds < 500)
+        while (!foregroundAcquired)
+        {
+            if (ct.IsCancellationRequested)
             {
-                IntPtr currentFg = context.ForegroundService.GetForegroundWindow();
-                if (currentFg == effectiveRoot || currentFg == targetHwnd)
+                context.Logger?.Info("[AutoConfirm] Cancelled during foreground acquisition.");
+                return MacroActionResult.Cancelled();
+            }
+
+            if (!context.ForegroundService.IsWindow(targetHwnd))
+            {
+                context.Logger?.Warning("[AutoConfirm] Target window closed during foreground acquisition.");
+                return MacroActionResult.TargetUnavailable("Target window closed during foreground acquisition.");
+            }
+
+            // Check if target window became minimized during retry
+            if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+            {
+                string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "[AutoConfirm][FOOL MODE] PAUSED — target window is minimized."
+                    : "[AutoConfirm] PAUSED — target window is minimized.";
+                context.Logger?.Warning(warnMsg);
+                context.ReportProgress("PAUSED — Target minimized");
+
+                while (context.ForegroundService.IsWindow(targetHwnd) &&
+                       (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                        (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot))))
                 {
-                    confirmedForeground = true;
+                    if (ct.IsCancellationRequested)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                    try
+                    {
+                        await Task.Delay(250, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                }
+
+                if (!context.ForegroundService.IsWindow(targetHwnd))
+                {
+                    return MacroActionResult.TargetUnavailable("Target window closed while minimized.");
+                }
+
+                string infoMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "[AutoConfirm][FOOL MODE] Target window restored; resuming prompt evaluation."
+                    : "[AutoConfirm] Target window restored; resuming prompt evaluation.";
+                context.Logger?.Info(infoMsg);
+
+                // Discard stale state: check if prompt is still active
+                var recheckAfterRestore = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                if (!recheckAfterRestore.Matched)
+                {
+                    context.Logger?.Info("[AutoConfirm] Foreground wait ended because the permission prompt is no longer active.");
+                    return null;
+                }
+                continue;
+            }
+
+            // Check if target acquired foreground naturally (e.g. user clicked on it)
+            IntPtr currentFg = context.ForegroundService.GetForegroundWindow();
+            if (currentFg == effectiveRoot || currentFg == targetHwnd)
+            {
+                foregroundAcquired = true;
+                break;
+            }
+
+            // Try to activate
+            bool activated = context.ForegroundService.ActivateWindow(effectiveRoot);
+            if (activated)
+            {
+                wasActivated = true;
+                var fgSw = Stopwatch.StartNew();
+                while (fgSw.ElapsedMilliseconds < 500)
+                {
+                    currentFg = context.ForegroundService.GetForegroundWindow();
+                    if (currentFg == effectiveRoot || currentFg == targetHwnd)
+                    {
+                        foregroundAcquired = true;
+                        break;
+                    }
+                    try
+                    {
+                        await Task.Delay(25, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                }
+
+                if (foregroundAcquired)
+                {
                     break;
                 }
-                await Task.Delay(25, ct).ConfigureAwait(false);
             }
 
-            if (!confirmedForeground)
+            // If we reach here, foreground activation failed or was denied by OS
+            if (!pausedLogged)
             {
-                context.Logger?.Warning("[AutoConfirm] Target window did not become foreground. ForegroundActivationFailed.");
-                return MacroActionResult.ApprovalBlocked("Terminal window failed to gain foreground focus. ForegroundActivationFailed.");
+                pausedLogged = true;
+                string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "[AutoConfirm][FOOL MODE] PAUSED — Windows denied foreground activation; waiting to retry safely."
+                    : "[AutoConfirm] PAUSED — Windows denied foreground activation; waiting to retry safely.";
+                context.Logger?.Warning(warnMsg);
+            }
+            context.ReportProgress("PAUSED — Waiting for Terminal focus");
+
+            int delayMs = retryBackoffs[Math.Min(retryIndex, retryBackoffs.Length - 1)];
+            retryIndex++;
+
+            try
+            {
+                await Task.Delay(delayMs, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return MacroActionResult.Cancelled();
             }
 
-            activationConfirmedAtMs = pulseSw.ElapsedMilliseconds;
-            context.Logger?.Info($"[AutoConfirm] terminal foreground confirmed (+{activationConfirmedAtMs}ms)");
+            // Re-read visible viewport to ensure prompt has not disappeared or changed while waiting
+            TextDetectionResult recheckDetect;
+            try
+            {
+                recheckDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return MacroActionResult.Cancelled();
+            }
+            catch (Exception ex)
+            {
+                context.Logger?.Warning($"[AutoConfirm] Detector failure during foreground retry: {ex.Message}");
+                return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
+            }
+
+            if (!recheckDetect.Matched)
+            {
+                context.Logger?.Info("[AutoConfirm] Foreground wait ended because the permission prompt is no longer active.");
+                return null;
+            }
+
+            // Re-evaluate with fresh viewport
+            string recheckRaw = recheckDetect.RawText ?? recheckDetect.ObservedText ?? string.Empty;
+            var recheckExtraction = context.CommandPromptParser.Parse(recheckRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
+            var recheckSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, recheckRaw, recheckExtraction);
+            string recheckProc = context.ForegroundService.GetProcessName(targetHwnd);
+            string recheckClass = context.ForegroundService.GetWindowClass(targetHwnd);
+
+            var recheckDecision = CommandApprovalEvaluator.Evaluate(RuleSet, recheckSnapshot, recheckProc, recheckClass, PolicyMode);
+            if (!recheckDecision.IsAllowed)
+            {
+                context.Logger?.Info($"[AutoConfirm] Prompt changed during foreground wait: {recheckDecision.BlockReason} — {recheckDecision.Explanation}");
+                return null;
+            }
+        }
+
+        activationConfirmedAtMs = pulseSw.ElapsedMilliseconds;
+        if (isAlreadyForeground)
+        {
+            context.Logger?.Info($"[AutoConfirm] terminal already foreground (+{activationConfirmedAtMs}ms)");
         }
         else
         {
-            activationConfirmedAtMs = pulseSw.ElapsedMilliseconds;
-            context.Logger?.Info($"[AutoConfirm] terminal already foreground (+{activationConfirmedAtMs}ms)");
+            context.Logger?.Info($"[AutoConfirm] terminal foreground confirmed (+{activationConfirmedAtMs}ms)");
         }
 
         try
         {
             // Step 3: CRITICAL REVALIDATION
-            // Re-read visible viewport
             var revalDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
             if (!revalDetect.Matched)
             {
@@ -421,7 +634,6 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("Approval prompt disappeared after foreground activation. RevalidationFailed.");
             }
 
-            // Verify target window identity has not changed or closed
             if (!context.ForegroundService.IsWindow(targetHwnd))
             {
                 context.Logger?.Warning("[AutoConfirm] Target window closed after foreground activation.");
@@ -443,7 +655,6 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.TargetUnavailable("Target process unavailable after foreground activation.");
             }
 
-            // Re-check UIPI compatibility after activation
             int revalPid = context.ForegroundService.GetProcessId(targetHwnd);
             var revalUipi = context.ElevationService.CheckCompatibility(revalPid);
             if (revalUipi.Compatibility == Security.ElevationCompatibility.UipiMismatch)
@@ -452,12 +663,10 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("UIPI mismatch detected during revalidation. Foreground input blocked.");
             }
 
-            // Re-parse command
             string revalRaw = revalDetect.RawText ?? revalDetect.ObservedText ?? string.Empty;
             var revalExtraction = context.CommandPromptParser.Parse(revalRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
             var revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
 
-            // Re-evaluate complete rule set with fresh process identity and fresh snapshot
             var revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass, PolicyMode);
             if (!revalDecision.IsAllowed)
             {
@@ -478,14 +687,17 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             IntPtr immediateFg = context.ForegroundService.GetForegroundWindow();
             if (immediateFg != effectiveRoot && immediateFg != targetHwnd)
             {
-                context.Logger?.Warning($"[AutoConfirm] Foreground changed unexpectedly before SendInput! Active: 0x{immediateFg.ToInt64():X8}. Aborting.");
-                return MacroActionResult.ApprovalBlocked("Foreground changed unexpectedly before input injection. ForegroundChanged.");
+                context.Logger?.Warning($"[AutoConfirm] Foreground changed unexpectedly before SendInput! Active: 0x{immediateFg.ToInt64():X8}. Retrying.");
+                return null;
             }
 
             // Step 5: Dispatch Enter (maximum 1 dispatch per action execution)
+            string cmdLog = revalSnapshot.CommandText
+                ?? (revalSnapshot.Envelope != null ? revalSnapshot.Envelope.GetCommandPreview(100) : "[Unknown]");
+
             if (PolicyMode == ApprovalPolicyMode.FoolMode)
             {
-                context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{revalSnapshot.CommandText ?? "[Unknown]"}\"");
+                context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{cmdLog}\"");
             }
 
             if (DeliveryMode == KeyDeliveryMode.ForegroundPulse)
@@ -548,11 +760,11 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 context.Logger?.Info($"[AutoConfirm] ForegroundPulse (KeepTargetForeground): activation confirmed at +{activationConfirmedAtMs}ms, Enter sent at +{enterSentAtMs}ms, target kept foreground.");
             }
 
-            // Step 6: Wait for prompt acknowledgement based on prompt fingerprint (performed while terminal is background again)
+            // Step 6: Wait for prompt acknowledgement based on prompt fingerprint
             var ackSw = Stopwatch.StartNew();
             bool promptAcknowledged = false;
-            string initialCmd = revalSnapshot.CommandText ?? string.Empty;
-            string initialOpt = revalSnapshot.SelectedOptionText ?? string.Empty;
+            string initialFingerprint = revalSnapshot.Envelope?.ComputePromptFingerprint()
+                ?? $"{revalSnapshot.CommandText}\n{revalSnapshot.PromptText}\n{revalSnapshot.SelectedOptionText}";
 
             while (ackSw.ElapsedMilliseconds < 2000)
             {
@@ -568,19 +780,18 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 var ackDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
                 if (!ackDetect.Matched)
                 {
-                    // Generic prompt text disappeared completely
                     promptAcknowledged = true;
                     break;
                 }
 
-                // If prompt text matched, check if the specific command or selected option changed
                 string ackRaw = ackDetect.RawText ?? ackDetect.ObservedText ?? string.Empty;
                 var currentExtraction = context.CommandPromptParser.Parse(ackRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
-                if (!currentExtraction.Success ||
-                    !string.Equals(currentExtraction.CommandText, initialCmd, StringComparison.OrdinalIgnoreCase) ||
-                    !string.Equals(currentExtraction.SelectedOptionText, initialOpt, StringComparison.OrdinalIgnoreCase))
+                var currentSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, ackRaw, currentExtraction);
+                string currentFingerprint = currentSnapshot.Envelope?.ComputePromptFingerprint()
+                    ?? $"{currentSnapshot.CommandText}\n{currentSnapshot.PromptText}\n{currentSnapshot.SelectedOptionText}";
+
+                if (!string.Equals(currentFingerprint, initialFingerprint, StringComparison.Ordinal))
                 {
-                    // Fingerprint changed! Command was dismissed or replaced by subsequent prompt
                     promptAcknowledged = true;
                     break;
                 }
@@ -595,7 +806,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             if (PolicyMode == ApprovalPolicyMode.FoolMode)
             {
                 context.Logger?.Info($"[AutoConfirm][FOOL MODE] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
-                return MacroActionResult.Success($"[FOOL MODE] Auto-confirmed unrestricted command \"{revalSnapshot.CommandText ?? "[Unknown]"}\".");
+                return MacroActionResult.Success($"[FOOL MODE] Auto-confirmed unrestricted command \"{cmdLog}\".");
             }
             else
             {
@@ -603,7 +814,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                     ? $" using rule '{revalDecision.MatchedRuleName}'"
                     : string.Empty;
                 context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
-                return MacroActionResult.Success($"Auto-confirmed command \"{revalSnapshot.CommandText}\"{matchedRuleMsg}.");
+                return MacroActionResult.Success($"Auto-confirmed command \"{cmdLog}\"{matchedRuleMsg}.");
             }
         }
         finally

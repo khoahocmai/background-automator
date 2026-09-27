@@ -603,4 +603,243 @@ public class FoolModeTests : IDisposable
         Assert.False(decisionB.IsAllowed);
         Assert.Equal(ApprovalBlockReason.CommandNotAllowed, decisionB.BlockReason);
     }
+
+    // 21. FOOL MODE approves multiline / wrapped pipeline command, while ExactRules fails closed.
+    [Fact]
+    public void Test21_FoolMode_Approves_Multiline_Wrapped_Pipeline_Command()
+    {
+        string wrappedPipelineViewport = @"
+Requesting permission for:
+git ls-files | Where-Object { $_ -match
+'(bin/|obj/|TestResults/|\.dll$|\.exe$|\.pdb$|\.dmp$|\.trx$|\.cache$|\.suo$|\.user$)' }
+
+Run this command?
+> 1. Yes, run command
+  2. No, cancel
+";
+        var parser = new CommandPromptParser();
+        var extraction = parser.Parse(wrappedPipelineViewport);
+        var snapshot = CommandPromptSnapshot.FromExtraction((IntPtr)0x1000, wrappedPipelineViewport, extraction);
+
+        var rule = new CommandApprovalRule
+        {
+            Name = "Strict Allowlist",
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command",
+            AllowedCommand = "git ls-files",
+            Enabled = true
+        };
+
+        // ExactRules must FAIL CLOSED
+        var exactDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.ExactRules);
+        Assert.False(exactDecision.IsAllowed);
+
+        // FOOL MODE must APPROVE unrestricted
+        var foolDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.FoolMode);
+        Assert.True(foolDecision.IsAllowed);
+        Assert.Contains("FOOL MODE", foolDecision.Explanation);
+    }
+
+    // 22. FOOL MODE approves complex dotnet test command with semicolons and filters.
+    [Fact]
+    public void Test22_FoolMode_Approves_Complex_Filter_Dotnet_Test_Command()
+    {
+        string complexCommandViewport = @"
+Requesting permission for:
+$env:BACKGROUNDAUTOMATOR_INTERACTIVE_TESTS=""1""; dotnet test tests/BackgroundAutomator.Tests/BackgroundAutomator.Tests.csproj -c Release --filter ""FullyQualifiedName~RealWorld_Terminal_TreeHierarchy_Diagnostic"" --logger ""console;verbosity=detailed""
+
+Run this command?
+> 1. Yes, run command
+  2. Cancel
+";
+        var parser = new CommandPromptParser();
+        var extraction = parser.Parse(complexCommandViewport);
+        var snapshot = CommandPromptSnapshot.FromExtraction((IntPtr)0x1000, complexCommandViewport, extraction);
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var foolDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.FoolMode);
+        Assert.True(foolDecision.IsAllowed);
+        Assert.Contains("FOOL MODE", foolDecision.Explanation);
+    }
+
+    // 23. FOOL MODE fails closed on malformed prompt boundaries (multiple permission headers).
+    [Fact]
+    public void Test23_FoolMode_FailsClosed_On_Multiple_Permission_Headers()
+    {
+        string multiHeaderViewport = @"
+Requesting permission for:
+Get-Date
+Requesting permission for:
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+        var parser = new CommandPromptParser();
+        var extraction = parser.Parse(multiHeaderViewport);
+        var snapshot = CommandPromptSnapshot.FromExtraction((IntPtr)0x1000, multiHeaderViewport, extraction);
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var foolDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.FoolMode);
+        Assert.False(foolDecision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.AmbiguousPrompt, foolDecision.BlockReason);
+        Assert.Contains("Malformed prompt boundaries", foolDecision.Explanation);
+    }
+
+    // 24. FOOL MODE fails closed on permission header below prompt.
+    [Fact]
+    public void Test24_FoolMode_FailsClosed_On_Permission_Header_Below_Prompt()
+    {
+        string misplacedHeaderViewport = @"
+Run this command?
+Requesting permission for:
+Get-Date
+> 1. Yes, run command
+";
+        var parser = new CommandPromptParser();
+        var extraction = parser.Parse(misplacedHeaderViewport);
+        var snapshot = CommandPromptSnapshot.FromExtraction((IntPtr)0x1000, misplacedHeaderViewport, extraction);
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var foolDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.FoolMode);
+        Assert.False(foolDecision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.AmbiguousPrompt, foolDecision.BlockReason);
+    }
+
+    // 25. FOOL MODE fails closed on empty permission block.
+    [Fact]
+    public void Test25_FoolMode_FailsClosed_On_Empty_Permission_Block()
+    {
+        string emptySectionViewport = @"
+Requesting permission for:
+
+Run this command?
+> 1. Yes, run command
+  2. Cancel
+";
+        var parser = new CommandPromptParser();
+        var extraction = parser.Parse(emptySectionViewport);
+        var snapshot = CommandPromptSnapshot.FromExtraction((IntPtr)0x1000, emptySectionViewport, extraction);
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var foolDecision = CommandApprovalEvaluator.Evaluate(rule, snapshot, "WindowsTerminal.exe", "CASCADIA", ApprovalPolicyMode.FoolMode);
+        Assert.False(foolDecision.IsAllowed);
+        Assert.Equal(ApprovalBlockReason.CommandNotFound, foolDecision.BlockReason);
+    }
+
+    // 26. PermissionPromptEnvelope computes stable fingerprint and detects prompt alterations.
+    [Fact]
+    public void Test26_PermissionPromptEnvelope_Computes_Stable_Fingerprint()
+    {
+        var envelopeA1 = new PermissionPromptEnvelope(
+            IsStructurallyValid: true,
+            RawCommandBlock: "git status\n-s",
+            NormalizedCommandBlock: "git status -s",
+            PromptText: "Run this command?",
+            SelectedOptionText: "> 1. Yes, run command",
+            IsApprovalPromptVisible: true,
+            IsYesOptionSelected: true);
+
+        var envelopeA2 = new PermissionPromptEnvelope(
+            IsStructurallyValid: true,
+            RawCommandBlock: "git status\n-s",
+            NormalizedCommandBlock: "git status -s",
+            PromptText: "Run this command?",
+            SelectedOptionText: "> 1. Yes, run command",
+            IsApprovalPromptVisible: true,
+            IsYesOptionSelected: true);
+
+        var envelopeB = new PermissionPromptEnvelope(
+            IsStructurallyValid: true,
+            RawCommandBlock: "git diff",
+            NormalizedCommandBlock: "git diff",
+            PromptText: "Run this command?",
+            SelectedOptionText: "> 1. Yes, run command",
+            IsApprovalPromptVisible: true,
+            IsYesOptionSelected: true);
+
+        Assert.Equal(envelopeA1.ComputePromptFingerprint(), envelopeA2.ComputePromptFingerprint());
+        Assert.NotEqual(envelopeA1.ComputePromptFingerprint(), envelopeB.ComputePromptFingerprint());
+    }
+
+    // 27. FOOL MODE executes and auto-confirms multiline wrapped pipeline command with 1 Enter.
+    [Fact]
+    public async Task Test27_FoolMode_Execution_Approves_Multiline_Command_Sends_Enter_Once()
+    {
+        string wrappedViewport = @"
+Requesting permission for:
+git ls-files | Where-Object { $_ -match
+'(bin/|obj/|TestResults/|\.dll$|\.exe$|\.pdb$|\.dmp$|\.trx$|\.cache$|\.suo$|\.user$)' }
+
+Run this command?
+> 1. Yes, run command
+  2. Cancel
+";
+        var detector = new FakeTextDetector();
+        detector.EnqueueResult(wrappedViewport);
+        detector.EnqueueResult(wrappedViewport);
+        detector.EnqueueNotFound(); // prompt dismissed after Enter
+
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        var fgService = new FakeForegroundService { CurrentForeground = (IntPtr)0x9999 };
+        var fgKeyboard = new FakeForegroundKeyboard();
+
+        var context = new MacroExecutionContext(
+            new FakeClicker(),
+            new FakeCapture(),
+            _logger,
+            targetHwnd,
+            new FakeKeyboard(),
+            detector,
+            fgKeyboard,
+            fgService)
+        {
+            IsFoolModeAuthorized = true
+        };
+
+        var rule = new CommandApprovalRule
+        {
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command"
+        };
+
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            policyMode: ApprovalPolicyMode.FoolMode,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains("[FOOL MODE]", result.Message);
+        Assert.Equal(1, fgKeyboard.SendEnterCallCount);
+    }
 }

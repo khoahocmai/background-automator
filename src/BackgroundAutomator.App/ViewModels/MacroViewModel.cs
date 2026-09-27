@@ -417,7 +417,7 @@ public sealed partial class MacroViewModel : ObservableObject
                 StatusText = $"State: RUNNING | {cycleText}Action [{index + 1}/{Actions.Count}]: {action.Name} ({progress})";
                 if (index >= 0 && index < Actions.Count)
                 {
-                    string color = progress.StartsWith("Blocked", StringComparison.OrdinalIgnoreCase) ? "#D83B01" : "#0078D4";
+                    string color = (progress.StartsWith("Blocked", StringComparison.OrdinalIgnoreCase) || progress.StartsWith("PAUSED", StringComparison.OrdinalIgnoreCase)) ? "#D83B01" : "#0078D4";
                     Actions[index].SetStatus(progress, color);
                 }
             });

@@ -13,7 +13,8 @@ public sealed record CommandPromptSnapshot(
     bool IsApprovalPromptVisible,
     bool IsYesOptionSelected,
     bool IsAmbiguous = false,
-    string? AmbiguityReason = null)
+    string? AmbiguityReason = null,
+    PermissionPromptEnvelope? Envelope = null)
 {
     public static CommandPromptSnapshot FromExtraction(
         IntPtr targetHwnd,
@@ -29,6 +30,7 @@ public sealed record CommandPromptSnapshot(
             extraction.IsApprovalPromptVisible,
             extraction.IsYesOptionSelected,
             extraction.IsAmbiguous,
-            extraction.FailureReason);
+            extraction.AmbiguityReason ?? extraction.FailureReason,
+            extraction.Envelope);
     }
 }

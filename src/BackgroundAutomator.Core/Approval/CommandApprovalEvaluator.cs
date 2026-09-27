@@ -34,14 +34,6 @@ public static class CommandApprovalEvaluator
                 $"Approval rule '{rule.Name}' is disabled.");
         }
 
-        // 0. Ambiguity check: fail closed if multiple plausible candidates or conflicting prompts detected
-        if (snapshot.IsAmbiguous)
-        {
-            return ApprovalDecision.Blocked(
-                ApprovalBlockReason.AmbiguousPrompt,
-                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
-        }
-
         // 1. Target process matching
         if (!string.IsNullOrWhiteSpace(rule.ExpectedProcess) && !string.IsNullOrWhiteSpace(actualProcessName))
         {
@@ -85,19 +77,70 @@ public static class CommandApprovalEvaluator
 
         // If in FOOL MODE, command allowlist matching is bypassed.
         // Prompt structure, target identity, and selected option have all been verified.
+        // We decouple permission envelope recognition from single-line command extraction.
         if (policyMode == ApprovalPolicyMode.FoolMode)
         {
-            string cmdDesc = !string.IsNullOrWhiteSpace(snapshot.CommandText)
-                ? snapshot.CommandText.Trim()
-                : "[Unknown/Unextracted]";
+            if (snapshot.Envelope != null)
+            {
+                if (!snapshot.Envelope.IsStructurallyValid)
+                {
+                    if (snapshot.Envelope.IsAmbiguous)
+                    {
+                        return ApprovalDecision.Blocked(
+                            ApprovalBlockReason.AmbiguousPrompt,
+                            snapshot.Envelope.AmbiguityReason ?? "Malformed permission prompt envelope boundaries.");
+                    }
 
+                    return ApprovalDecision.Blocked(
+                        ApprovalBlockReason.CommandNotFound,
+                        snapshot.Envelope.ParseFailureReason ?? "Could not extract command from visible prompt area.");
+                }
+
+                if (string.IsNullOrWhiteSpace(snapshot.Envelope.RawCommandBlock))
+                {
+                    return ApprovalDecision.Blocked(
+                        ApprovalBlockReason.CommandNotFound,
+                        "Could not extract command from visible prompt area.");
+                }
+
+                string preview = snapshot.Envelope.GetCommandPreview(100);
+                return ApprovalDecision.Allowed(
+                    $"Unrestricted approval granted under FOOL MODE. Command: \"{preview}\"",
+                    matchedRuleId: null,
+                    matchedRuleName: "FOOL MODE");
+            }
+
+            // Fallback for prompts without explicit permission envelopes
+            if (snapshot.IsAmbiguous)
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.AmbiguousPrompt,
+                    snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+            }
+
+            if (string.IsNullOrWhiteSpace(snapshot.CommandText))
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.CommandNotFound,
+                    "Could not extract command from visible prompt area.");
+            }
+
+            string cmdDesc = snapshot.CommandText.Trim();
             return ApprovalDecision.Allowed(
                 $"Unrestricted approval granted under FOOL MODE. Command: \"{cmdDesc}\"",
                 matchedRuleId: null,
                 matchedRuleName: "FOOL MODE");
         }
 
-        // 5. Command availability
+        // 5. Fail-closed ambiguity check for ExactRules
+        if (snapshot.IsAmbiguous)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.AmbiguousPrompt,
+                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+        }
+
+        // 6. Command availability for ExactRules
         if (string.IsNullOrWhiteSpace(snapshot.CommandText))
         {
             return ApprovalDecision.Blocked(
@@ -105,7 +148,7 @@ public static class CommandApprovalEvaluator
                 "Could not extract command from visible prompt area.");
         }
 
-        // 6. Explicit command allowlist matching (Exact mode)
+        // 7. Explicit command allowlist matching (Exact mode)
         string extracted = snapshot.CommandText.Trim();
         string allowed = rule.AllowedCommand?.Trim() ?? string.Empty;
 
@@ -148,14 +191,6 @@ public static class CommandApprovalEvaluator
             throw new ArgumentNullException(nameof(ruleSet));
         if (snapshot == null)
             throw new ArgumentNullException(nameof(snapshot));
-
-        // 0. Ambiguity check: fail closed if multiple plausible candidates or conflicting prompts detected
-        if (snapshot.IsAmbiguous)
-        {
-            return ApprovalDecision.Blocked(
-                ApprovalBlockReason.AmbiguousPrompt,
-                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
-        }
 
         // 1. Target process matching
         if (!string.IsNullOrWhiteSpace(ruleSet.ExpectedProcess) && !string.IsNullOrWhiteSpace(actualProcessName))
@@ -200,19 +235,70 @@ public static class CommandApprovalEvaluator
 
         // If in FOOL MODE, command allowlist matching is bypassed.
         // Prompt structure, target identity, and selected option have all been verified.
+        // We decouple permission envelope recognition from single-line command extraction.
         if (policyMode == ApprovalPolicyMode.FoolMode)
         {
-            string cmdDesc = !string.IsNullOrWhiteSpace(snapshot.CommandText)
-                ? snapshot.CommandText.Trim()
-                : "[Unknown/Unextracted]";
+            if (snapshot.Envelope != null)
+            {
+                if (!snapshot.Envelope.IsStructurallyValid)
+                {
+                    if (snapshot.Envelope.IsAmbiguous)
+                    {
+                        return ApprovalDecision.Blocked(
+                            ApprovalBlockReason.AmbiguousPrompt,
+                            snapshot.Envelope.AmbiguityReason ?? "Malformed permission prompt envelope boundaries.");
+                    }
 
+                    return ApprovalDecision.Blocked(
+                        ApprovalBlockReason.CommandNotFound,
+                        snapshot.Envelope.ParseFailureReason ?? "Could not extract command from visible prompt area.");
+                }
+
+                if (string.IsNullOrWhiteSpace(snapshot.Envelope.RawCommandBlock))
+                {
+                    return ApprovalDecision.Blocked(
+                        ApprovalBlockReason.CommandNotFound,
+                        "Could not extract command from visible prompt area.");
+                }
+
+                string preview = snapshot.Envelope.GetCommandPreview(100);
+                return ApprovalDecision.Allowed(
+                    $"Unrestricted approval granted under FOOL MODE. Command: \"{preview}\"",
+                    matchedRuleId: null,
+                    matchedRuleName: "FOOL MODE");
+            }
+
+            // Fallback for prompts without explicit permission envelopes
+            if (snapshot.IsAmbiguous)
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.AmbiguousPrompt,
+                    snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+            }
+
+            if (string.IsNullOrWhiteSpace(snapshot.CommandText))
+            {
+                return ApprovalDecision.Blocked(
+                    ApprovalBlockReason.CommandNotFound,
+                    "Could not extract command from visible prompt area.");
+            }
+
+            string cmdDesc = snapshot.CommandText.Trim();
             return ApprovalDecision.Allowed(
                 $"Unrestricted approval granted under FOOL MODE. Command: \"{cmdDesc}\"",
                 matchedRuleId: null,
                 matchedRuleName: "FOOL MODE");
         }
 
-        // 5. Command availability
+        // 5. Fail-closed ambiguity check for ExactRules
+        if (snapshot.IsAmbiguous)
+        {
+            return ApprovalDecision.Blocked(
+                ApprovalBlockReason.AmbiguousPrompt,
+                snapshot.AmbiguityReason ?? "Multiple conflicting prompts or ambiguous command candidates detected.");
+        }
+
+        // 6. Command availability for ExactRules
         if (string.IsNullOrWhiteSpace(snapshot.CommandText))
         {
             return ApprovalDecision.Blocked(
@@ -220,7 +306,7 @@ public static class CommandApprovalEvaluator
                 "Could not extract command from visible prompt area.");
         }
 
-        // 6. Explicit command allowlist matching across enabled rules in the set (Exact mode)
+        // 7. Explicit command allowlist matching across enabled rules in the set (Exact mode)
         var enabledRules = ruleSet.Rules.Where(r => r.Enabled).ToList();
         if (enabledRules.Count == 0)
         {
