@@ -486,3 +486,14 @@ $RECYCLE.BIN/
 /publish/
 /publish-output/
 *.tsv
+
+# Crash and hang dumps
+*.dmp
+*.mdmp
+*.dump
+
+# Test results and blame-hang sequence artifacts
+*.trx
+Sequence*.xml
+coverage/
+*.bak
