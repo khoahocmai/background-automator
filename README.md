@@ -178,3 +178,4 @@ Saved profiles are stored as human-readable, schema-versioned JSON files at:
 %LOCALAPPDATA%\BackgroundAutomator\profiles\*.json
 ```
 Profiles can also be backed up, restored, or transferred across machines. Target windows will automatically re-resolve when loaded on another system based on the profile's durable `TargetDescriptor`.
+# background-automator
