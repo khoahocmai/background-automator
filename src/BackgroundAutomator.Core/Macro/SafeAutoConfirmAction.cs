@@ -42,6 +42,14 @@ public sealed class SafeAutoConfirmAction : IMacroAction
     public TimeSpan PollInterval { get; }
     public IntPtr OverrideHwnd { get; }
 
+    public static readonly TimeSpan DefaultUserIdleThreshold = TimeSpan.FromMilliseconds(1500);
+    public static readonly TimeSpan MinUserIdleThreshold = TimeSpan.FromMilliseconds(250);
+    public static readonly TimeSpan MaxUserIdleThreshold = TimeSpan.FromMilliseconds(10000);
+    public static readonly TimeSpan ForegroundStablePeriod = TimeSpan.FromMilliseconds(300);
+
+    public bool RespectUserFocus { get; }
+    public TimeSpan UserIdleThreshold { get; }
+
     public string Name => "Safe Auto Confirm";
 
     public string DisplayString
@@ -71,7 +79,9 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         IntPtr overrideHwnd = default,
         AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
         FocusBehavior focusBehavior = FocusBehavior.FastPulse,
-        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules,
+        bool respectUserFocus = true,
+        TimeSpan? userIdleThreshold = null)
     {
         RuleSet = ruleSet ?? throw new ArgumentNullException(nameof(ruleSet));
         ExecutionMode = executionMode;
@@ -82,6 +92,18 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         WaitMode = waitMode;
         FocusBehavior = focusBehavior;
         PolicyMode = policyMode;
+        RespectUserFocus = respectUserFocus;
+
+        if (userIdleThreshold.HasValue)
+        {
+            var rawMs = (int)userIdleThreshold.Value.TotalMilliseconds;
+            var clampedMs = Math.Clamp(rawMs, (int)MinUserIdleThreshold.TotalMilliseconds, (int)MaxUserIdleThreshold.TotalMilliseconds);
+            UserIdleThreshold = TimeSpan.FromMilliseconds(clampedMs);
+        }
+        else
+        {
+            UserIdleThreshold = DefaultUserIdleThreshold;
+        }
     }
 
     public SafeAutoConfirmAction(
@@ -93,7 +115,9 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         IntPtr overrideHwnd = default,
         AutoConfirmWaitMode waitMode = AutoConfirmWaitMode.FixedTimeout,
         FocusBehavior focusBehavior = FocusBehavior.FastPulse,
-        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules)
+        ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules,
+        bool respectUserFocus = true,
+        TimeSpan? userIdleThreshold = null)
         : this(
             ApprovalRuleSet.FromSingleRule(rule ?? throw new ArgumentNullException(nameof(rule))),
             executionMode,
@@ -103,7 +127,9 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             overrideHwnd,
             waitMode,
             focusBehavior,
-            policyMode)
+            policyMode,
+            respectUserFocus,
+            userIdleThreshold)
     {
     }
 
@@ -453,6 +479,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         int[] retryBackoffs = [500, 750, 1000];
         bool foregroundAcquired = isAlreadyForeground;
         bool pausedLogged = false;
+        bool userActivePausedLogged = false;
+        bool userActivityFailureLogged = false;
 
         while (!foregroundAcquired)
         {
@@ -520,8 +548,201 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             IntPtr currentFg = context.ForegroundService.GetForegroundWindow();
             if (currentFg == effectiveRoot || currentFg == targetHwnd)
             {
+                context.Logger?.Info("[AutoConfirm] Target became foreground; skipping focus pulse.");
                 foregroundAcquired = true;
+                isAlreadyForeground = true;
                 break;
+            }
+
+            // Step A: Check Respect User Focus Guard
+            if (RespectUserFocus && context.UserActivityService != null)
+            {
+                bool gotIdle = context.UserActivityService.TryGetIdleDuration(out TimeSpan idleDuration);
+                if (!gotIdle)
+                {
+                    if (!userActivityFailureLogged)
+                    {
+                        userActivityFailureLogged = true;
+                        context.Logger?.Warning("[AutoConfirm] GetLastInputInfo failed; falling back to immediate focus pulse.");
+                    }
+                }
+                else if (idleDuration < UserIdleThreshold &&
+                         currentFg != effectiveRoot &&
+                         currentFg != targetHwnd)
+                {
+                    if (!userActivePausedLogged)
+                    {
+                        userActivePausedLogged = true;
+                        string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                            ? "[AutoConfirm][FOOL MODE] PAUSED — user is active in another foreground window; foreground pulse deferred."
+                            : "[AutoConfirm] PAUSED — user is active in another foreground window; foreground pulse deferred.";
+                        context.Logger?.Warning(warnMsg);
+                    }
+
+                    string progressMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                        ? "⚠ FOOL MODE — PAUSED: User active in another window"
+                        : "PAUSED — User active in another window";
+                    context.ReportProgress(progressMsg);
+
+                    IntPtr stableCandidateHwnd = currentFg;
+
+                    // Pause loop: wait until user is idle and foreground is stable
+                    while (true)
+                    {
+                        if (ct.IsCancellationRequested)
+                        {
+                            return MacroActionResult.Cancelled();
+                        }
+
+                        if (!context.ForegroundService.IsWindow(targetHwnd))
+                        {
+                            return MacroActionResult.TargetUnavailable("Target window closed during user active wait.");
+                        }
+
+                        // Target minimized takes priority
+                        if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                            (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                        {
+                            break;
+                        }
+
+                        // Natural foreground acquisition (user clicked terminal)
+                        currentFg = context.ForegroundService.GetForegroundWindow();
+                        if (currentFg == effectiveRoot || currentFg == targetHwnd)
+                        {
+                            context.Logger?.Info("[AutoConfirm] Target became foreground; skipping focus pulse.");
+                            foregroundAcquired = true;
+                            isAlreadyForeground = true;
+                            break;
+                        }
+
+                        if (!context.UserActivityService.TryGetIdleDuration(out idleDuration) || idleDuration >= UserIdleThreshold)
+                        {
+                            // User appears idle. Test foreground stability window (300 ms).
+                            stableCandidateHwnd = currentFg;
+                            try
+                            {
+                                await Task.Delay(ForegroundStablePeriod, ct).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                return MacroActionResult.Cancelled();
+                            }
+
+                            if (!context.ForegroundService.IsWindow(targetHwnd))
+                            {
+                                return MacroActionResult.TargetUnavailable("Target window closed during stability wait.");
+                            }
+
+                            if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                                (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                            {
+                                break;
+                            }
+
+                            IntPtr fgAfter = context.ForegroundService.GetForegroundWindow();
+                            if (fgAfter == effectiveRoot || fgAfter == targetHwnd)
+                            {
+                                context.Logger?.Info("[AutoConfirm] Target became foreground; skipping focus pulse.");
+                                foregroundAcquired = true;
+                                isAlreadyForeground = true;
+                                break;
+                            }
+
+                            bool finalIdleOk = context.UserActivityService.TryGetIdleDuration(out var idleAfter);
+                            if (finalIdleOk && idleAfter >= UserIdleThreshold && fgAfter == stableCandidateHwnd)
+                            {
+                                // Foreground stable and user idle!
+                                userActivePausedLogged = false;
+                                pausedLogged = false;
+                                context.Logger?.Info("[AutoConfirm] RESUMED — user idle window detected; prompt will be re-read before foreground activation.");
+                                break;
+                            }
+
+                            // Otherwise, either new input arrived or foreground changed during the 300ms.
+                            // Continue waiting in PAUSED_USER_ACTIVE.
+                        }
+
+                        try
+                        {
+                            await Task.Delay(150, ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return MacroActionResult.Cancelled();
+                        }
+                    }
+
+                    if (foregroundAcquired)
+                    {
+                        break;
+                    }
+
+                    if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                        (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                    {
+                        continue;
+                    }
+
+                    // Fresh prompt re-read after user active pause
+                    TextDetectionResult idleRecheckDetect;
+                    try
+                    {
+                        idleRecheckDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                    catch (Exception ex)
+                    {
+                        context.Logger?.Warning($"[AutoConfirm] Detector failure after user-idle wait: {ex.Message}");
+                        return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
+                    }
+
+                    if (!idleRecheckDetect.Matched)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Foreground wait ended because the permission prompt is no longer active.");
+                        return null;
+                    }
+
+                    // Re-evaluate with fresh viewport
+                    string idleRecheckRaw = idleRecheckDetect.RawText ?? idleRecheckDetect.ObservedText ?? string.Empty;
+                    var idleRecheckExtraction = context.CommandPromptParser.Parse(idleRecheckRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
+                    var idleRecheckSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, idleRecheckRaw, idleRecheckExtraction);
+                    string idleRecheckProc = context.ForegroundService.GetProcessName(targetHwnd);
+                    string idleRecheckClass = context.ForegroundService.GetWindowClass(targetHwnd);
+
+                    var idleRecheckDecision = CommandApprovalEvaluator.Evaluate(RuleSet, idleRecheckSnapshot, idleRecheckProc, idleRecheckClass, PolicyMode);
+                    if (!idleRecheckDecision.IsAllowed)
+                    {
+                        context.Logger?.Info($"[AutoConfirm] Prompt changed during user-idle wait: {idleRecheckDecision.BlockReason} — {idleRecheckDecision.Explanation}");
+                        return null;
+                    }
+
+                    // Final guard immediately before ActivateWindow (User adjustment 2)
+                    IntPtr prePulseFg = context.ForegroundService.GetForegroundWindow();
+                    if (prePulseFg == effectiveRoot || prePulseFg == targetHwnd)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Target became foreground; skipping focus pulse.");
+                        foregroundAcquired = true;
+                        isAlreadyForeground = true;
+                        break;
+                    }
+
+                    if (!context.ForegroundService.IsWindow(targetHwnd) ||
+                        context.ForegroundService.IsWindowMinimized(targetHwnd))
+                    {
+                        continue;
+                    }
+
+                    bool gotFinalIdle = context.UserActivityService.TryGetIdleDuration(out var finalIdleBeforePulse);
+                    if (prePulseFg != stableCandidateHwnd || (gotFinalIdle && finalIdleBeforePulse < UserIdleThreshold))
+                    {
+                        context.Logger?.Info("[AutoConfirm] User activity or foreground changed during revalidation; deferring foreground activation.");
+                        continue;
+                    }
+                }
             }
 
             // Try to activate
@@ -715,6 +936,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             }
 
             enterSentAtMs = pulseSw.ElapsedMilliseconds;
+            context.UserActivityService?.NotifyInputInjected();
             context.Logger?.Info($"[AutoConfirm] Enter sent (+{enterSentAtMs}ms)");
 
             // FastPulse optimization: Restore previous foreground IMMEDIATELY after Enter!

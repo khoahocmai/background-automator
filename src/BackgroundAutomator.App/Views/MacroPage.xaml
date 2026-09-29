@@ -407,6 +407,19 @@
                                               Width="140"
                                               Margin="0,0,16,0" />
 
+                                    <CheckBox Content="Respect user focus"
+                                              IsChecked="{Binding AutoConfirmRespectUserFocus, Mode=TwoWay}"
+                                              ToolTip="Pause foreground activation while you are actively using another application."
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,16,0" />
+
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0"
+                                                Visibility="{Binding AutoConfirmRespectUserFocus, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Idle before pulse:" VerticalAlignment="Center" Margin="0,0,6,0" FontWeight="Medium" />
+                                        <ui:NumberBox Value="{Binding AutoConfirmUserIdleThresholdMs, Mode=TwoWay}" Minimum="250" Maximum="10000" Width="85" Margin="0,0,4,0" />
+                                        <TextBlock Text="ms" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    </StackPanel>
+
                                     <TextBlock Text="Poll interval:" VerticalAlignment="Center" Margin="0,0,8,0" FontWeight="Medium" />
                                     <ui:NumberBox Value="{Binding AutoConfirmPollIntervalMs, Mode=TwoWay}" Minimum="50" Maximum="10000" Width="85" Margin="0,0,4,0" />
                                     <TextBlock Text="{Binding AutoConfirmPollIntervalDisplay}" VerticalAlignment="Center" FontWeight="SemiBold" Margin="0,0,16,0" Foreground="{DynamicResource AccentFillColorDefaultBrush}" />

@@ -26,6 +26,10 @@ public static class User32
     public static extern bool IsIconic(IntPtr hWnd);
 
     [DllImport(User32Dll, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    [DllImport(User32Dll, SetLastError = true)]
     public static extern uint SendInput(uint nInputs, [MarshalAs(UnmanagedType.LPArray), In] INPUT[] pInputs, int cbSize);
 
     [DllImport(User32Dll, SetLastError = true)]

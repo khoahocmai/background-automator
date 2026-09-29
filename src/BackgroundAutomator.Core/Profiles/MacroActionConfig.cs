@@ -35,6 +35,8 @@ public sealed class MacroActionConfig
     public string? WaitMode { get; set; }
     public string? FocusBehavior { get; set; }
     public string? ApprovalPolicyMode { get; set; }
+    public bool? RespectUserFocus { get; set; }
+    public int? UserIdleThresholdMs { get; set; }
 
     // SafeAutoConfirm multi-rule set property
     public ApprovalRuleSetConfig? RuleSet { get; set; }
@@ -98,6 +100,8 @@ public sealed class MacroActionConfig
                 WaitMode = saca.WaitMode.ToString(),
                 FocusBehavior = saca.FocusBehavior.ToString(),
                 ApprovalPolicyMode = saca.PolicyMode.ToString(),
+                RespectUserFocus = saca.RespectUserFocus,
+                UserIdleThresholdMs = (int)saca.UserIdleThreshold.TotalMilliseconds,
                 TimeoutMs = (int)saca.Timeout.TotalMilliseconds,
                 PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds,
                 RuleSet = new ApprovalRuleSetConfig
@@ -190,6 +194,9 @@ public sealed class MacroActionConfig
             ruleSet = ApprovalRuleSet.FromSingleRule(singleRule);
         }
 
+        int rawIdle = UserIdleThresholdMs ?? 1500;
+        int clampedIdle = Math.Clamp(rawIdle, 250, 10000);
+
         return new SafeAutoConfirmAction(
             ruleSet,
             executionMode: ParseExecutionMode(ExecutionMode),
@@ -198,7 +205,9 @@ public sealed class MacroActionConfig
             pollInterval: PollIntervalMs.HasValue ? TimeSpan.FromMilliseconds(PollIntervalMs.Value) : null,
             waitMode: ParseWaitMode(WaitMode),
             focusBehavior: ParseFocusBehavior(FocusBehavior),
-            policyMode: ParseApprovalPolicyMode(ApprovalPolicyMode));
+            policyMode: ParseApprovalPolicyMode(ApprovalPolicyMode),
+            respectUserFocus: RespectUserFocus ?? true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(clampedIdle));
     }
 
     private static ApprovalPolicyMode ParseApprovalPolicyMode(string? mode)
