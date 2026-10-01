@@ -130,6 +130,8 @@ public class ProfileAndMacroUXTests : IDisposable
         Assert.Equal(AutoConfirmWaitMode.Indefinite, vm.AutoConfirmWaitMode);
         Assert.Equal(FocusBehavior.KeepTargetForeground, vm.AutoConfirmFocusBehavior);
         Assert.Equal(450, vm.AutoConfirmPollIntervalMs);
+        Assert.True(vm.AutoConfirmRespectUserFocus);
+        Assert.Equal(1500, vm.AutoConfirmUserIdleThresholdMs);
         Assert.Contains("Edit Action #1: Safe Auto Confirm", vm.BuilderHeader);
     }
 
@@ -154,6 +156,8 @@ public class ProfileAndMacroUXTests : IDisposable
         vm.AutoConfirmAllowedCommand = "dotnet build";
         vm.AutoConfirmFocusBehavior = FocusBehavior.KeepTargetForeground;
         vm.AutoConfirmPollIntervalMs = 750;
+        vm.AutoConfirmRespectUserFocus = false;
+        vm.AutoConfirmUserIdleThresholdMs = 2500;
 
         vm.SaveActionEdit();
 
@@ -167,6 +171,24 @@ public class ProfileAndMacroUXTests : IDisposable
         Assert.Equal("dotnet build", updated.Rule.AllowedCommand);
         Assert.Equal(FocusBehavior.KeepTargetForeground, updated.FocusBehavior);
         Assert.Equal(750, updated.PollInterval.TotalMilliseconds);
+        Assert.False(updated.RespectUserFocus);
+        Assert.Equal(2500, updated.UserIdleThreshold.TotalMilliseconds);
+    }
+
+    [Fact]
+    public void MacroViewModel_RespectUserFocus_Defaults_And_DirtyTracking()
+    {
+        var vm = CreateMacroViewModel();
+        Assert.True(vm.AutoConfirmRespectUserFocus);
+        Assert.Equal(1500, vm.AutoConfirmUserIdleThresholdMs);
+
+        vm.IsDirty = false;
+        vm.AutoConfirmRespectUserFocus = false;
+        Assert.True(vm.IsDirty);
+
+        vm.IsDirty = false;
+        vm.AutoConfirmUserIdleThresholdMs = 3000;
+        Assert.True(vm.IsDirty);
     }
 
     [Fact]

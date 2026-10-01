@@ -27,8 +27,9 @@ public class SafeAutoConfirmActionTests
         public string ProcessName { get; set; } = "WindowsTerminal";
         public string WindowClass { get; set; } = "CASCADIA_HOSTING_WINDOW_CLASS";
         public IntPtr RootHwndOverride { get; set; } = IntPtr.Zero;
+        public Func<IntPtr>? ForegroundProvider { get; set; }
 
-        public IntPtr GetForegroundWindow() => CurrentForeground;
+        public IntPtr GetForegroundWindow() => ForegroundProvider != null ? ForegroundProvider() : CurrentForeground;
 
         public bool ActivateWindow(IntPtr hWnd)
         {
@@ -115,6 +116,41 @@ public class SafeAutoConfirmActionTests
             Task.FromResult<WindowCapture?>(null);
     }
 
+    public class FakeUserActivityService : BackgroundAutomator.Core.UserActivity.IUserActivityService
+    {
+        public TimeSpan IdleDuration { get; set; } = TimeSpan.FromSeconds(10);
+        public bool ReturnSuccess { get; set; } = true;
+        public int CallCount { get; private set; }
+        public bool InputInjectedNotified { get; private set; }
+        public Func<TimeSpan>? IdleDurationProvider { get; set; }
+
+        public bool TryGetIdleDuration(out TimeSpan idleDuration)
+        {
+            CallCount++;
+            if (!ReturnSuccess)
+            {
+                idleDuration = TimeSpan.Zero;
+                return false;
+            }
+
+            idleDuration = IdleDurationProvider != null ? IdleDurationProvider() : IdleDuration;
+            return true;
+        }
+
+        public TimeSpan LastNotifiedIdleDurationBeforeInjection { get; private set; }
+
+        public void NotifyInputInjected(TimeSpan idleDurationBeforeInjection)
+        {
+            InputInjectedNotified = true;
+            LastNotifiedIdleDurationBeforeInjection = idleDurationBeforeInjection;
+        }
+
+        public void NotifyInputInjected()
+        {
+            NotifyInputInjected(TimeSpan.Zero);
+        }
+    }
+
     private static (MacroExecutionContext context, FakeForegroundService fgService, FakeForegroundKeyboard fgKb, FakeElevationService elevService) CreateTestContext(
         ITextDetectionService detector,
         IntPtr targetHwnd)
@@ -122,6 +158,7 @@ public class SafeAutoConfirmActionTests
         var fgService = new FakeForegroundService();
         var fgKb = new FakeForegroundKeyboard();
         var elevService = new FakeElevationService();
+        var actService = new FakeUserActivityService();
 
         var context = new MacroExecutionContext(
             new NullClicker(),
@@ -131,9 +168,34 @@ public class SafeAutoConfirmActionTests
             foregroundKeyboard: fgKb,
             foregroundService: fgService,
             textDetector: detector,
-            elevationService: elevService);
+            elevationService: elevService,
+            userActivityService: actService);
 
         return (context, fgService, fgKb, elevService);
+    }
+
+    private static (MacroExecutionContext context, FakeForegroundService fgService, FakeForegroundKeyboard fgKb, FakeElevationService elevService, FakeUserActivityService actService) CreateTestContextWithActivity(
+        ITextDetectionService detector,
+        IntPtr targetHwnd,
+        FakeUserActivityService? activityService = null)
+    {
+        var fgService = new FakeForegroundService();
+        var fgKb = new FakeForegroundKeyboard();
+        var elevService = new FakeElevationService();
+        var actService = activityService ?? new FakeUserActivityService();
+
+        var context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector,
+            elevationService: elevService,
+            userActivityService: actService);
+
+        return (context, fgService, fgKb, elevService, actService);
     }
 
     private static CommandApprovalRule CreateRule() => new()
@@ -1484,5 +1546,1232 @@ Run this command?
         Assert.Equal(MacroActionStatus.TargetUnavailable, result.Status);
         Assert.Contains("closed during foreground acquisition", result.Message);
         Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_TargetAlreadyForeground_RecentInput_DoesNotPause_SendsEnter()
+    {
+        // Section 35: Target already foreground + recent input (e.g. 10ms)
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        FakeForegroundKeyboard? fgKbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromMilliseconds(10) // Input occurred 10ms ago
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgKbRef = fgKb;
+        fgService.CurrentForeground = targetHwnd; // Target is ALREADY foreground
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, fgService.ActivateCallCount); // Bypassed SetForegroundWindow!
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Enter sent safely
+        Assert.DoesNotContain(progressList, p => p.Contains("User active"));
+        Assert.True(actService.InputInjectedNotified); // Enter injection was notified
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_OtherForeground_RecentUserInput_EntersPausedUserActive_ZeroFocus_ZeroEnter()
+    {
+        // Section 36: Other foreground + recent user input (100ms idle < 1500ms threshold)
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromMilliseconds(100) // User is actively interacting
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999; // Another app foreground (e.g. Chrome)
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Contains(progressList, p => p == "PAUSED — User active in another window");
+        Assert.Equal(0, fgService.ActivateCallCount); // ZERO calls to SetForegroundWindow!
+        Assert.Equal(0, fgKb.SendEnterCallCount);     // ZERO calls to SendInput!
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_UserBecomesIdle_AndForegroundStable_ApprovesWithFastPulse()
+    {
+        // Section 37: User starts active, becomes idle >= 1500ms, foreground stable 300ms -> FastPulse -> Enter
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        FakeForegroundKeyboard? fgKbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            // First 150ms user is active (100ms idle); after 150ms user becomes idle (2500ms idle)
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 150
+                ? TimeSpan.FromMilliseconds(100)
+                : TimeSpan.FromMilliseconds(2500)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgKbRef = fgKb;
+        fgService.CurrentForeground = (IntPtr)0x9999; // Another window foreground
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(progressList, p => p.Contains("User active"));
+        Assert.True(fgService.ActivateCallCount >= 1); // FastPulse attempted after idle & stability!
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_ContinuousActivity_RemainsPaused_ZeroActivations()
+    {
+        // Section 38: Continuous user activity (never reaching 1500ms threshold)
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        int callIndex = 0;
+        int[] intervals = [100, 200, 50, 400, 100, 300, 50];
+        var actService = new FakeUserActivityService
+        {
+            IdleDurationProvider = () =>
+            {
+                int val = intervals[callIndex % intervals.Length];
+                callIndex++;
+                return TimeSpan.FromMilliseconds(val);
+            }
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(450));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgService.ActivateCallCount);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_NewInputDuringStabilityWindow_AbortsActivation()
+    {
+        // Section 39: Idle met, but before 300ms stability completes, new physical input occurs
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        int callCount = 0;
+        var actService = new FakeUserActivityService
+        {
+            IdleDurationProvider = () =>
+            {
+                callCount++;
+                // 1st call (Step A): active (50ms) -> enters pause loop
+                if (callCount == 1) return TimeSpan.FromMilliseconds(50);
+                // 2nd call (pause loop check): met threshold (2000ms) -> starts 300ms stability
+                if (callCount == 2) return TimeSpan.FromMilliseconds(2000);
+                // 3rd call (stability verification after 300ms): user pressed a key! (10ms)
+                return TimeSpan.FromMilliseconds(10);
+            }
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgService.ActivateCallCount);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_ForegroundChangesDuringStabilityWindow_ResetsStability()
+    {
+        // Section 40: Chrome (0x9999) changes to VS Code (0x8888) during stability wait
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 50
+                ? TimeSpan.FromMilliseconds(50)
+                : TimeSpan.FromMilliseconds(2000)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        // Change foreground window 150ms in (during stability wait)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            fgService.CurrentForeground = (IntPtr)0x8888;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(450));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgService.ActivateCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_TargetBecomesForegroundNaturallyDuringPause_BypassesIdleWait()
+    {
+        // Section 41: User manually clicked Terminal while paused -> naturally acquires foreground -> approves immediately
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        FakeForegroundKeyboard? fgKbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromMilliseconds(50) // User is actively interacting
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgKbRef = fgKb;
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        // User clicks Terminal after 100ms
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.CurrentForeground = targetHwnd;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true,
+            userIdleThreshold: TimeSpan.FromMilliseconds(1500));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(0, fgService.ActivateCallCount); // Bypassed SetForegroundWindow!
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_Disabled_UsesExistingFastPulsePath()
+    {
+        // Section 42: RespectUserFocus = false preserves legacy FastPulse path
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        FakeForegroundKeyboard? fgKbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromMilliseconds(50) // Recent input
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgKbRef = fgKb;
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: false); // OFF
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(fgService.ActivateCallCount >= 1); // FastPulse called immediately!
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_TargetMinimized_TakesPriorityOverUserActive()
+    {
+        // Section 43: Target minimized takes priority over user-active pause
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromMilliseconds(50)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.IsMinimized = true;
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        // Restore target after 100ms
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            fgService.IsMinimized = false;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(400));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Contains(progressList, p => p == "PAUSED — Target minimized");
+        Assert.Equal(0, fgService.ActivateCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_ActivationFailureAfterIdle_TransitionsToPausedForegroundUnavailable()
+    {
+        // Section 44: Activation failure after idle transitions to PAUSED_FOREGROUND_UNAVAILABLE
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var actService = new FakeUserActivityService
+        {
+            IdleDuration = TimeSpan.FromSeconds(5) // User idle
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.ShouldFailActivation = true; // OS denies SetForegroundWindow
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(600));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Contains(progressList, p => p == "PAUSED — Waiting for Terminal focus");
+        Assert.DoesNotContain(progressList, p => p.Contains("Blocked"));
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_UserResumesActivityDuringForegroundRetry_TransitionsBackToPausedUserActive()
+    {
+        // Section 45: In PAUSED_FOREGROUND_UNAVAILABLE, user starts typing -> transitions back to PAUSED_USER_ACTIVE
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            // First 400ms idle -> attempts activation (fails) -> then user resumes typing at 400ms
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 400
+                ? TimeSpan.FromSeconds(5)
+                : TimeSpan.FromMilliseconds(50)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+        fgService.ShouldFailActivation = true;
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(1200));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Contains(progressList, p => p == "PAUSED — Waiting for Terminal focus");
+        Assert.Contains(progressList, p => p == "PAUSED — User active in another window");
+        // Only 1 activation attempt was made before user resumed activity, then retries halted
+        Assert.Equal(1, fgService.ActivateCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_PromptDisappearsDuringUserActivePause_ReturnsWithoutEnter()
+    {
+        // Section 46: Prompt disappears during user pause -> returns without Enter
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        int detectCount = 0;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            detectCount++;
+            // Prompt matched at start, disappears after user pause
+            if (detectCount == 1) return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            return Task.FromResult(TextDetectionResult.NotFound());
+        });
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 150
+                ? TimeSpan.FromMilliseconds(50)
+                : TimeSpan.FromSeconds(5)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromMilliseconds(600),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(0, fgKb.SendEnterCallCount); // NO Enter sent!
+        Assert.Equal(0, fgService.ActivateCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_FinalGuard_UserActivityDuringRevalidation_AbortsActivation()
+    {
+        // User adjustment 2: Final guard immediately before ActivateWindow
+        // If user activity occurred during prompt revalidation, returns to PAUSED_USER_ACTIVE
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 50
+                ? TimeSpan.FromMilliseconds(50) // initial active
+                : TimeSpan.FromSeconds(5) // becomes idle
+        };
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            // Simulate user typing during prompt re-read
+            actService.IdleDurationProvider = () => TimeSpan.FromMilliseconds(20);
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgService.ActivateCallCount); // Final guard blocked activation!
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_ActivityServiceFails_FallsBackToFastPulse_LogsWarning()
+    {
+        // User adjustment 4: If TryGetIdleDuration fails, log warning once and fall back to existing FastPulse path
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        FakeForegroundKeyboard? fgKbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService
+        {
+            ReturnSuccess = false // TryGetIdleDuration fails
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        fgKbRef = fgKb;
+        fgService.CurrentForeground = (IntPtr)0x9999;
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(50),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(fgService.ActivateCallCount >= 1); // Activated immediately via fallback!
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        var inMemoryLogger = (InMemoryLogger)context.Logger!;
+        Assert.Contains(inMemoryLogger.Entries, e => e.Message.Contains("Failed to determine user idle duration") || e.Message.Contains("GetLastInputInfo failed"));
+    }
+
+    [Fact]
+    public async Task RespectUserFocus_SingleMonitorCompatibility_Scenarios_A_B_C_D()
+    {
+        // Section 53: Explicit Single-Monitor Compatibility Test
+        var targetHwnd = (IntPtr)0x1234;
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+
+        // Scenario A: Terminal foreground, recent physical input (10ms)
+        {
+            FakeForegroundKeyboard? kbRef = null;
+            var detector = new FakeTextDetector((hwnd, req) =>
+            {
+                if (kbRef?.SendEnterCallCount > 0)
+                    return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            });
+            var act = new FakeUserActivityService { IdleDuration = TimeSpan.FromMilliseconds(10) };
+            var (ctx, fg, kb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, act);
+            kbRef = kb;
+            fg.CurrentForeground = targetHwnd;
+
+            var action = new SafeAutoConfirmAction(CreateRule(), executionMode: AutoConfirmExecutionMode.Confirm, pollInterval: TimeSpan.FromMilliseconds(50), respectUserFocus: true);
+            var res = await action.ExecuteAsync(ctx, CancellationToken.None);
+
+            Assert.True(res.IsSuccess);
+            Assert.Equal(0, fg.ActivateCallCount);
+            Assert.Equal(1, kb.SendEnterCallCount);
+        }
+
+        // Scenario B: Another app foreground, user actively typing
+        {
+            var detector = new FakeTextDetector((hwnd, req) =>
+                Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+            var act = new FakeUserActivityService { IdleDuration = TimeSpan.FromMilliseconds(50) };
+            var (ctx, fg, kb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, act);
+            fg.CurrentForeground = (IntPtr)0x7777;
+
+            var action = new SafeAutoConfirmAction(CreateRule(), executionMode: AutoConfirmExecutionMode.Confirm, pollInterval: TimeSpan.FromMilliseconds(50), respectUserFocus: true);
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+            var res = await action.ExecuteAsync(ctx, cts.Token);
+
+            Assert.Equal(MacroActionStatus.Cancelled, res.Status);
+            Assert.Equal(0, fg.ActivateCallCount);
+            Assert.Equal(0, kb.SendEnterCallCount);
+        }
+
+        // Scenario C: Another app foreground, user becomes idle > threshold
+        {
+            FakeForegroundKeyboard? kbRef = null;
+            var detector = new FakeTextDetector((hwnd, req) =>
+            {
+                if (kbRef?.SendEnterCallCount > 0)
+                    return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            });
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var act = new FakeUserActivityService
+            {
+                IdleDurationProvider = () => sw.ElapsedMilliseconds < 100 ? TimeSpan.FromMilliseconds(50) : TimeSpan.FromSeconds(5)
+            };
+            var (ctx, fg, kb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, act);
+            kbRef = kb;
+            fg.CurrentForeground = (IntPtr)0x7777;
+
+            var action = new SafeAutoConfirmAction(CreateRule(), executionMode: AutoConfirmExecutionMode.Confirm, pollInterval: TimeSpan.FromMilliseconds(50), respectUserFocus: true);
+            var res = await action.ExecuteAsync(ctx, CancellationToken.None);
+
+            Assert.True(res.IsSuccess);
+            Assert.True(fg.ActivateCallCount >= 1);
+            Assert.Equal(1, kb.SendEnterCallCount);
+        }
+
+        // Scenario D: RespectUserFocus = false
+        {
+            FakeForegroundKeyboard? kbRef = null;
+            var detector = new FakeTextDetector((hwnd, req) =>
+            {
+                if (kbRef?.SendEnterCallCount > 0)
+                    return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+                return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+            });
+            var act = new FakeUserActivityService { IdleDuration = TimeSpan.FromMilliseconds(10) };
+            var (ctx, fg, kb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, act);
+            kbRef = kb;
+            fg.CurrentForeground = (IntPtr)0x7777;
+
+            var action = new SafeAutoConfirmAction(CreateRule(), executionMode: AutoConfirmExecutionMode.Confirm, pollInterval: TimeSpan.FromMilliseconds(50), respectUserFocus: false);
+            var res = await action.ExecuteAsync(ctx, CancellationToken.None);
+
+            Assert.True(res.IsSuccess);
+            Assert.True(fg.ActivateCallCount >= 1);
+            Assert.Equal(1, kb.SendEnterCallCount);
+        }
+    }
+
+    [Fact]
+    public async Task Section24_MandatoryRegressionTest_StaleRestore_RestoresWindowB_NeverWindowA()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowA = (IntPtr)0xC0C0; // CocCoc
+        IntPtr windowB = (IntPtr)0xCCAA; // Chrome
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        FakeForegroundKeyboard? kbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (kbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var actService = new FakeUserActivityService
+        {
+            // Active for first 40ms, then idle
+            IdleDurationProvider = () => sw.ElapsedMilliseconds < 40 ? TimeSpan.FromMilliseconds(50) : TimeSpan.FromSeconds(5)
+        };
+
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        kbRef = fgKb;
+
+        // Prompt initially arrives while Window A (CocCoc) is foreground
+        fgService.CurrentForeground = windowA;
+
+        // During PAUSED_USER_ACTIVE, user switches foreground to Window B (Chrome)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(20);
+            fgService.CurrentForeground = windowB;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(1, fgService.RestoreCallCount);
+        Assert.Equal(windowB, fgService.LastRestoredHwnd);
+        Assert.NotEqual(windowA, fgService.LastRestoredHwnd);
+    }
+
+    [Fact]
+    public async Task Section25_MandatoryRegressionTest_UserChangesFocusDuringPulse_RestorationSkipped()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+        IntPtr windowCocCoc = (IntPtr)0xC0C0;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        FakeForegroundKeyboard? kbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (kbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        kbRef = fgKb;
+
+        fgService.CurrentForeground = windowChrome;
+
+        // When SendEnter executes, simulate user clicking CocCoc during the pulse!
+        fgKb.OnEvent += ev =>
+        {
+            if (ev == "SendEnter")
+            {
+                fgService.CurrentForeground = windowCocCoc;
+            }
+        };
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        // Restoration must be skipped because foreground changed away from Terminal
+        Assert.Equal(0, fgService.RestoreCallCount);
+        Assert.Equal(windowCocCoc, fgService.CurrentForeground);
+    }
+
+    [Fact]
+    public async Task Section26_FinallyPathRegression_NormalVsUserFocusChanged()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+        IntPtr windowCocCoc = (IntPtr)0xC0C0;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        // Case 1: Exception occurs after activation, but current foreground is still Terminal
+        {
+            bool firstDetect = true;
+            var detector = new FakeTextDetector((hwnd, req) =>
+            {
+                if (firstDetect)
+                {
+                    firstDetect = false;
+                    return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+                }
+                // Throw exception during revalidation after activation
+                throw new InvalidOperationException("Test exception during revalidation");
+            });
+
+            var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+            var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+            fgService.CurrentForeground = windowChrome;
+
+            var rule = CreateRule();
+            var action = new SafeAutoConfirmAction(
+                rule,
+                executionMode: AutoConfirmExecutionMode.Confirm,
+                timeout: TimeSpan.FromSeconds(5),
+                pollInterval: TimeSpan.FromMilliseconds(20),
+                respectUserFocus: true);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => action.ExecuteAsync(context, CancellationToken.None));
+            // Finally block should have restored windowChrome since Terminal was still foreground
+            Assert.Equal(1, fgService.RestoreCallCount);
+            Assert.Equal(windowChrome, fgService.LastRestoredHwnd);
+        }
+
+        // Case 2: Exception occurs after activation, but user changed foreground to CocCoc
+        {
+            bool firstDetect = true;
+            FakeForegroundService? fgRef = null;
+            var detector = new FakeTextDetector((hwnd, req) =>
+            {
+                if (firstDetect)
+                {
+                    firstDetect = false;
+                    return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+                }
+                // User clicks CocCoc right before revalidation exception
+                if (fgRef != null) fgRef.CurrentForeground = windowCocCoc;
+                throw new InvalidOperationException("Test exception during revalidation");
+            });
+
+            var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+            var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+            fgRef = fgService;
+            fgService.CurrentForeground = windowChrome;
+
+            var rule = CreateRule();
+            var action = new SafeAutoConfirmAction(
+                rule,
+                executionMode: AutoConfirmExecutionMode.Confirm,
+                timeout: TimeSpan.FromSeconds(5),
+                pollInterval: TimeSpan.FromMilliseconds(20),
+                respectUserFocus: true);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => action.ExecuteAsync(context, CancellationToken.None));
+            // Finally block must NOT restore windowChrome because user changed focus to CocCoc
+            Assert.Equal(0, fgService.RestoreCallCount);
+            Assert.Equal(windowCocCoc, fgService.CurrentForeground);
+        }
+    }
+
+    [Fact]
+    public async Task Section27_MinimizeRestoreNewForeground_RestoresWindowB_NotA()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowA = (IntPtr)0xC0C0;
+        IntPtr windowB = (IntPtr)0xCCAA;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        FakeForegroundKeyboard? kbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (kbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        kbRef = fgKb;
+
+        // Prompt arrives with Window A foreground, but target is minimized
+        fgService.CurrentForeground = windowA;
+        fgService.IsMinimized = true;
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(50);
+            // While minimized, user switches to Window B
+            fgService.CurrentForeground = windowB;
+            // Target is restored
+            fgService.IsMinimized = false;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(1, fgService.RestoreCallCount);
+        Assert.Equal(windowB, fgService.LastRestoredHwnd);
+        Assert.NotEqual(windowA, fgService.LastRestoredHwnd);
+    }
+
+    [Fact]
+    public async Task Section33_34_ForegroundDenial_FirstActivationDenied_NoRepeatedStormAgainstSameForeground()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+
+        fgService.CurrentForeground = windowChrome;
+        fgService.ShouldFailActivation = true; // OS denies activation
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(600));
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        // Cancelled because of timeout waiting for state change
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+        // Only 1 activation attempt was made! No repeated SetForegroundWindow storm!
+        Assert.Equal(1, fgService.ActivateCallCount);
+    }
+
+    [Fact]
+    public async Task Section35_ForegroundDenial_ForegroundChanges_AllowsNewActivationAttempt()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+        IntPtr windowCocCoc = (IntPtr)0xC0C0;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        FakeForegroundKeyboard? kbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (kbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        kbRef = fgKb;
+
+        fgService.CurrentForeground = windowChrome;
+        fgService.ShouldFailActivation = true; // First activation denied on Chrome
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(100);
+            // User switches to CocCoc, and this time OS permits activation
+            fgService.CurrentForeground = windowCocCoc;
+            fgService.ShouldFailActivation = false;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.Equal(2, fgService.ActivateCallCount); // 1 on Chrome (failed) + 1 on CocCoc (succeeded)
+        Assert.Equal(windowCocCoc, fgService.LastRestoredHwnd);
+    }
+
+    [Fact]
+    public async Task Section36_ForegroundDenial_UserResumesActivity_TransitionsToPausedUserActive()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+
+        fgService.CurrentForeground = windowChrome;
+        fgService.ShouldFailActivation = true; // Denied
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(80);
+            // User resumes typing in Chrome
+            actService.IdleDuration = TimeSpan.FromMilliseconds(10);
+        });
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(1, fgService.ActivateCallCount); // 0 additional activation calls while active
+        Assert.Equal(0, fgKb.SendEnterCallCount);
+    }
+
+    [Fact]
+    public async Task Section37_ForegroundDenial_UserManuallyFocusesTerminal_DirectEnterNoActivation()
+    {
+        var targetHwnd = (IntPtr)0x1234;
+        IntPtr windowChrome = (IntPtr)0xCCAA;
+
+        string promptText = @"
+dotnet test BackgroundAutomator.sln
+
+Run this command?
+> 1. Yes, run command
+  2. No, edit command
+";
+        FakeForegroundKeyboard? kbRef = null;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (kbRef?.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound("Running command..."));
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var actService = new FakeUserActivityService { IdleDuration = TimeSpan.FromSeconds(5) };
+        var (context, fgService, fgKb, _, _) = CreateTestContextWithActivity(detector, targetHwnd, actService);
+        kbRef = fgKb;
+
+        fgService.CurrentForeground = windowChrome;
+        fgService.ShouldFailActivation = true; // First attempt fails
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(80);
+            // User manually clicks on Terminal
+            fgService.CurrentForeground = targetHwnd;
+        });
+
+        var rule = CreateRule();
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20),
+            respectUserFocus: true);
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        // Only the initial denied call occurred; no SetForegroundWindow call was made for manual focus!
+        Assert.Equal(1, fgService.ActivateCallCount);
+        Assert.Equal(0, fgService.RestoreCallCount); // No restoration on target-already-foreground path
     }
 }

@@ -14,6 +14,7 @@ using BackgroundAutomator.Core.Approval;
 using BackgroundAutomator.Core.Profiles;
 using BackgroundAutomator.App.Services;
 using BackgroundAutomator.Core.TextDetection;
+using BackgroundAutomator.Core.UserActivity;
 
 namespace BackgroundAutomator.App.ViewModels;
 
@@ -27,6 +28,7 @@ public sealed partial class MacroViewModel : ObservableObject
     private readonly Action<MacroRunnerState, string> _onMacroStateChanged;
     private readonly IDialogService _dialogService;
     private readonly ITargetValidator _targetValidator;
+    private readonly IUserActivityService _userActivityService;
 
     private WindowTarget? _currentTarget;
 
@@ -91,6 +93,15 @@ public sealed partial class MacroViewModel : ObservableObject
 
     [ObservableProperty]
     private FocusBehavior _autoConfirmFocusBehavior = FocusBehavior.FastPulse;
+
+    [ObservableProperty]
+    private bool _autoConfirmRespectUserFocus = true;
+
+    [ObservableProperty]
+    private int _autoConfirmUserIdleThresholdMs = 1500;
+
+    partial void OnAutoConfirmRespectUserFocusChanged(bool value) => IsDirty = true;
+    partial void OnAutoConfirmUserIdleThresholdMsChanged(int value) => IsDirty = true;
 
     // Safe Auto Confirm Approval Policy (ExactRules vs FOOL MODE)
     [ObservableProperty]
@@ -275,7 +286,8 @@ public sealed partial class MacroViewModel : ObservableObject
         IAppLogger logger,
         Action<MacroRunnerState, string> onMacroStateChanged,
         IDialogService dialogService,
-        ITargetValidator targetValidator)
+        ITargetValidator targetValidator,
+        IUserActivityService? userActivityService = null)
     {
         _macroRunner = macroRunner;
         _clicker = clicker;
@@ -285,6 +297,7 @@ public sealed partial class MacroViewModel : ObservableObject
         _onMacroStateChanged = onMacroStateChanged;
         _dialogService = dialogService ?? new WpfDialogService();
         _targetValidator = targetValidator ?? new Win32TargetValidator();
+        _userActivityService = userActivityService ?? new Win32UserActivityService(logger);
 
         WireEvents();
     }
@@ -295,7 +308,7 @@ public sealed partial class MacroViewModel : ObservableObject
         GdiWindowCaptureService captureService,
         IAppLogger logger,
         Action<MacroRunnerState, string> onMacroStateChanged)
-        : this(macroRunner, clicker, captureService, new BackgroundKeyboardEngine(logger), logger, onMacroStateChanged, new WpfDialogService(), new Win32TargetValidator())
+        : this(macroRunner, clicker, captureService, new BackgroundKeyboardEngine(logger), logger, onMacroStateChanged, new WpfDialogService(), new Win32TargetValidator(), new Win32UserActivityService(logger))
     {
     }
 
@@ -642,7 +655,9 @@ public sealed partial class MacroViewModel : ObservableObject
             pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
             waitMode: AutoConfirmWaitMode,
             focusBehavior: AutoConfirmFocusBehavior,
-            policyMode: AutoConfirmPolicyMode);
+            policyMode: AutoConfirmPolicyMode,
+            respectUserFocus: AutoConfirmRespectUserFocus,
+            userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs));
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         IsDirty = true;
@@ -788,7 +803,9 @@ public sealed partial class MacroViewModel : ObservableObject
                     pollInterval: TimeSpan.FromMilliseconds(AutoConfirmPollIntervalMs),
                     waitMode: AutoConfirmWaitMode,
                     focusBehavior: AutoConfirmFocusBehavior,
-                    policyMode: AutoConfirmPolicyMode);
+                    policyMode: AutoConfirmPolicyMode,
+                    respectUserFocus: AutoConfirmRespectUserFocus,
+                    userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs));
                 break;
 
             default:
@@ -865,6 +882,8 @@ public sealed partial class MacroViewModel : ObservableObject
                 AutoConfirmTimeoutMs = (int)saca.Timeout.TotalMilliseconds;
                 AutoConfirmFocusBehavior = saca.FocusBehavior;
                 AutoConfirmPolicyMode = saca.PolicyMode;
+                AutoConfirmRespectUserFocus = saca.RespectUserFocus;
+                AutoConfirmUserIdleThresholdMs = (int)saca.UserIdleThreshold.TotalMilliseconds;
                 break;
         }
     }
@@ -1002,7 +1021,13 @@ public sealed partial class MacroViewModel : ObservableObject
             act.SetStatus("Ready", "#888888");
         }
 
-        var context = new MacroExecutionContext(_clicker, _captureService, _logger, _currentTarget!.TargetHwnd, _keyboard)
+        var context = new MacroExecutionContext(
+            _clicker,
+            _captureService,
+            _logger,
+            _currentTarget!.TargetHwnd,
+            _keyboard,
+            userActivityService: _userActivityService)
         {
             IsFoolModeAuthorized = isAuthorized
         };

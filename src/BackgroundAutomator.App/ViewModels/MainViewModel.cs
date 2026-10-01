@@ -88,6 +88,8 @@ public sealed partial class MainViewModel : ObservableObject
             _logger,
             OnSimpleRunnerStateChanged);
 
+        var userActivityService = new Win32UserActivityService(_logger);
+
         MacroVM = new MacroViewModel(
             _macroRunner,
             _clicker,
@@ -96,7 +98,8 @@ public sealed partial class MainViewModel : ObservableObject
             _logger,
             OnMacroRunnerStateChanged,
             dialogSvc,
-            targetVal);
+            targetVal,
+            userActivityService);
 
         ProfilesVM = new ProfilesViewModel(
             _profileStorage,

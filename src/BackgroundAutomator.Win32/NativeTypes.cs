@@ -138,3 +138,13 @@ public struct INPUT
     public HARDWAREINPUT hi;
 }
 
+/// <summary>
+/// Win32 LASTINPUTINFO structure for GetLastInputInfo.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct LASTINPUTINFO
+{
+    public uint cbSize;
+    public uint dwTime;
+}
+

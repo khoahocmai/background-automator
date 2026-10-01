@@ -319,4 +319,79 @@ public class SafeAutoConfirmProfileTests : IDisposable
         var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
         Assert.Equal(FocusBehavior.FastPulse, action.FocusBehavior);
     }
+
+    [Theory]
+    [InlineData(true, 1500)]
+    [InlineData(true, 3000)]
+    [InlineData(false, 1500)]
+    [InlineData(false, 500)]
+    public void MacroActionConfig_RoundTrips_RespectUserFocus_And_UserIdleThreshold(bool respectUserFocus, int idleMs)
+    {
+        var rule = new CommandApprovalRule
+        {
+            Name = "Approve tests",
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command",
+            AllowedCommand = "dotnet test BackgroundAutomator.sln"
+        };
+
+        var originalAction = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            respectUserFocus: respectUserFocus,
+            userIdleThreshold: TimeSpan.FromMilliseconds(idleMs));
+
+        var config = MacroActionConfig.FromMacroAction(originalAction);
+        Assert.Equal(respectUserFocus, config.RespectUserFocus);
+        Assert.Equal(idleMs, config.UserIdleThresholdMs);
+
+        var restoredAction = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(respectUserFocus, restoredAction.RespectUserFocus);
+        Assert.Equal(TimeSpan.FromMilliseconds(idleMs), restoredAction.UserIdleThreshold);
+    }
+
+    [Fact]
+    public void Legacy_SafeAutoConfirm_Without_RespectUserFocus_Defaults_To_True_And_1500ms()
+    {
+        string legacyJson = @"{
+  ""actionType"": ""SafeAutoConfirm"",
+  ""ruleName"": ""Legacy Rule"",
+  ""expectedProcess"": ""WindowsTerminal.exe"",
+  ""allowedCommand"": ""Get-Date""
+}";
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<MacroActionConfig>(legacyJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(config);
+        Assert.Null(config.RespectUserFocus);
+        Assert.Null(config.UserIdleThresholdMs);
+
+        var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.True(action.RespectUserFocus);
+        Assert.Equal(TimeSpan.FromMilliseconds(1500), action.UserIdleThreshold);
+    }
+
+    [Theory]
+    [InlineData(50, 250)]       // below min 250 -> clamped to 250
+    [InlineData(0, 250)]        // zero -> clamped to 250
+    [InlineData(-500, 250)]     // negative -> clamped to 250
+    [InlineData(10000, 10000)]  // at max 10000
+    [InlineData(25000, 10000)]  // above max 10000 -> clamped to 10000
+    public void UserIdleThreshold_OutOfRange_Clamps_Correctly(int inputMs, int expectedClampedMs)
+    {
+        var config = new MacroActionConfig
+        {
+            ActionType = "SafeAutoConfirm",
+            RuleName = "Test Clamping",
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command",
+            AllowedCommand = "echo test",
+            RespectUserFocus = true,
+            UserIdleThresholdMs = inputMs
+        };
+
+        var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(TimeSpan.FromMilliseconds(expectedClampedMs), action.UserIdleThreshold);
+    }
 }
