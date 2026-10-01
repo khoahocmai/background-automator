@@ -18,6 +18,7 @@ public sealed partial class DiagnosticsViewModel : ObservableObject, IDisposable
 
     private readonly IAppLogger _logger;
     private readonly IUiDispatcher _uiDispatcher;
+    private readonly IClipboardService _clipboardService;
     private readonly ConcurrentQueue<LogMessageItem> _pendingQueue = new();
     private int _drainScheduled;
     private int _maxEntries;
@@ -41,7 +42,20 @@ public sealed partial class DiagnosticsViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private bool _autoScroll = true;
 
+    [ObservableProperty]
+    private string? _copyFeedback;
+
     public IReadOnlyList<string> FilterOptions { get; } = new[] { "All", "Info", "Warning", "Error", "Debug" };
+
+    /// <summary>
+    /// Delegate to retrieve currently selected log items from UI list box.
+    /// </summary>
+    public Func<IEnumerable<LogMessageItem>>? SelectedItemsProvider { get; set; }
+
+    /// <summary>
+    /// Event raised when SelectAll command is executed from menu or shortcut.
+    /// </summary>
+    public event Action? SelectAllRequested;
 
     /// <summary>
     /// Event raised when new visible log entries are added and auto-scroll is enabled,
@@ -50,12 +64,18 @@ public sealed partial class DiagnosticsViewModel : ObservableObject, IDisposable
     public event Action<LogMessageItem>? ScrollRequested;
 
     public int PendingQueueCount => _pendingQueue.Count;
+    public IClipboardService ClipboardService => _clipboardService;
 
-    public DiagnosticsViewModel(IAppLogger logger, IUiDispatcher? uiDispatcher = null, int maxEntries = DefaultMaxEntries)
+    public DiagnosticsViewModel(
+        IAppLogger logger,
+        IUiDispatcher? uiDispatcher = null,
+        int maxEntries = DefaultMaxEntries,
+        IClipboardService? clipboardService = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _maxEntries = maxEntries > 0 ? maxEntries : DefaultMaxEntries;
         _uiDispatcher = uiDispatcher ?? new WpfUiDispatcher();
+        _clipboardService = clipboardService ?? new WpfClipboardService();
         _logger.MessageLogged += OnMessageLogged;
     }
 
@@ -168,6 +188,104 @@ public sealed partial class DiagnosticsViewModel : ObservableObject, IDisposable
         {
             ScrollRequested?.Invoke(FilteredEntries[^1]);
         }
+    }
+
+    [RelayCommand]
+    public void CopySelected()
+    {
+        _uiDispatcher.InvokeAsync(() =>
+        {
+            var items = SelectedItemsProvider?.Invoke();
+            if (items != null)
+            {
+                CopySelectedInternal(items);
+            }
+        });
+    }
+
+    public void CopySelected(IEnumerable<LogMessageItem> selectedItems)
+    {
+        CopySelectedInternal(selectedItems);
+    }
+
+    private void CopySelectedInternal(IEnumerable<LogMessageItem> items)
+    {
+        var list = items?.ToList() ?? new List<LogMessageItem>();
+        if (list.Count == 0)
+        {
+            return;
+        }
+
+        var ordered = list.OrderBy(x => x.Timestamp).ToList();
+        string formatted = string.Join(Environment.NewLine, ordered.Select(x => x.FormatForClipboard()));
+
+        bool ok = _clipboardService.SetText(formatted);
+        if (ok)
+        {
+            CopyFeedback = $"Copied {ordered.Count} selected log {(ordered.Count == 1 ? "line" : "lines")}.";
+        }
+        else
+        {
+            CopyFeedback = "Failed to copy to clipboard (clipboard locked).";
+        }
+    }
+
+    [RelayCommand]
+    public void CopyVisible()
+    {
+        _uiDispatcher.InvokeAsync(() =>
+        {
+            var list = FilteredEntries.ToList();
+            if (list.Count == 0)
+            {
+                return;
+            }
+
+            var ordered = list.OrderBy(x => x.Timestamp).ToList();
+            string formatted = string.Join(Environment.NewLine, ordered.Select(x => x.FormatForClipboard()));
+
+            bool ok = _clipboardService.SetText(formatted);
+            if (ok)
+            {
+                CopyFeedback = $"Copied {ordered.Count} visible log {(ordered.Count == 1 ? "line" : "lines")}.";
+            }
+            else
+            {
+                CopyFeedback = "Failed to copy to clipboard (clipboard locked).";
+            }
+        });
+    }
+
+    [RelayCommand]
+    public void CopyAll()
+    {
+        _uiDispatcher.InvokeAsync(() =>
+        {
+            var list = AllEntries.ToList();
+            if (list.Count == 0)
+            {
+                return;
+            }
+
+            var ordered = list.OrderBy(x => x.Timestamp).ToList();
+            string formatted = string.Join(Environment.NewLine, ordered.Select(x => x.FormatForClipboard()));
+
+            bool ok = _clipboardService.SetText(formatted);
+            if (ok)
+            {
+                CopyFeedback = $"Copied all {ordered.Count} retained log {(ordered.Count == 1 ? "line" : "lines")}.";
+            }
+            else
+            {
+                CopyFeedback = "Failed to copy to clipboard (clipboard locked).";
+            }
+        });
+    }
+
+    [RelayCommand]
+    public void SelectAll()
+    {
+        SelectAllRequested?.Invoke();
     }
 
     [RelayCommand]

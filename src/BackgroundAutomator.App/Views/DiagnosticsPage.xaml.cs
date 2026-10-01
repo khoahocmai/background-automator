@@ -1,4 +1,6 @@
+using System.Linq;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using BackgroundAutomator.App.Models;
 using BackgroundAutomator.App.ViewModels;
@@ -17,8 +19,24 @@ public partial class DiagnosticsPage : Page
         InitializeComponent();
         DataContext = viewModel;
 
+        viewModel.SelectedItemsProvider = () => LogListBox.SelectedItems.Cast<LogMessageItem>();
+        viewModel.SelectAllRequested += () => LogListBox.SelectAll();
         viewModel.ScrollRequested += OnScrollRequested;
         Loaded += OnLoaded;
+    }
+
+    private void LogListBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.C)
+        {
+            ViewModel.CopySelectedCommand.Execute(null);
+            e.Handled = true;
+        }
+        else if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.A)
+        {
+            LogListBox.SelectAll();
+            e.Handled = true;
+        }
     }
 
     private void OnLoaded(object sender, System.Windows.RoutedEventArgs e)
