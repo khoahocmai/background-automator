@@ -523,9 +523,9 @@ public class FoolModeTests : IDisposable
         Assert.Equal(0, fgKeyboard.SendEnterCallCount); // Never sent
     }
 
-    // 12. FoolMode retains fingerprint acknowledgement.
+    // 12. FoolMode retains fingerprint acknowledgement and transitions to PAUSED_ACK_PENDING when prompt remains visible.
     [Fact]
-    public async Task Test12_FoolMode_Retains_FingerprintAcknowledgement()
+    public async Task Test12_FoolMode_PromptRemainsVisible_EntersPausedAckPending_AndDoesNotSendDuplicateEnter()
     {
         var fgService = new FakeForegroundService();
         var fgKeyboard = new FakeForegroundKeyboard();
@@ -551,6 +551,9 @@ public class FoolModeTests : IDisposable
             IsFoolModeAuthorized = true
         };
 
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
         var rule = new CommandApprovalRule
         {
             ExpectedProcess = "WindowsTerminal.exe",
@@ -561,14 +564,17 @@ public class FoolModeTests : IDisposable
         var action = new SafeAutoConfirmAction(
             rule,
             executionMode: AutoConfirmExecutionMode.Confirm,
-            policyMode: ApprovalPolicyMode.FoolMode);
+            policyMode: ApprovalPolicyMode.FoolMode,
+            pollInterval: TimeSpan.FromMilliseconds(20));
 
-        var result = await action.ExecuteAsync(context, CancellationToken.None);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(2200));
+
+        var result = await action.ExecuteAsync(context, cts.Token);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(MacroActionStatus.ApprovalBlocked, result.Status);
-        Assert.Contains("ConfirmationNotAcknowledged", result.Message);
-        Assert.Equal(1, fgKeyboard.SendEnterCallCount); // Sent once, but blocked when not acknowledged
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Contains(progressList, p => p.Contains("Waiting for confirmation acknowledgement"));
+        Assert.Equal(1, fgKeyboard.SendEnterCallCount); // Sent once, never duplicated
     }
 
     // 20. ExactRules behavior remains unchanged.

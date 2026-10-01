@@ -1070,6 +1070,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             string initialFingerprint = revalSnapshot.Envelope?.ComputePromptFingerprint()
                 ?? $"{revalSnapshot.CommandText}\n{revalSnapshot.PromptText}\n{revalSnapshot.SelectedOptionText}";
 
+            // Fast path: poll for up to ~2 seconds
             while (ackSw.ElapsedMilliseconds < 2000)
             {
                 try
@@ -1079,6 +1080,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 catch (OperationCanceledException)
                 {
                     return MacroActionResult.Cancelled();
+                }
+
+                if (!context.ForegroundService.IsWindow(targetHwnd))
+                {
+                    context.Logger?.Warning("[AutoConfirm] Target window closed during fast acknowledgement polling.");
+                    return MacroActionResult.TargetUnavailable("Target window closed during fast acknowledgement polling.");
                 }
 
                 var ackDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
@@ -1101,10 +1108,125 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 }
             }
 
+            // Slow path: if prompt remains visible past fast ack window, transition to PAUSED_ACK_PENDING
             if (!promptAcknowledged)
             {
-                context.Logger?.Warning("[AutoConfirm] Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
-                return MacroActionResult.ApprovalBlocked("Prompt remained visible after Enter injection. ConfirmationNotAcknowledged.");
+                string ackPendingProgress = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "⚠ FOOL MODE — PAUSED: Waiting for confirmation acknowledgement"
+                    : "PAUSED — Waiting for confirmation acknowledgement";
+                context.ReportProgress(ackPendingProgress);
+
+                bool longPendingWarningLogged = false;
+
+                while (true)
+                {
+                    if (ct.IsCancellationRequested)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Cancelled while waiting for confirmation acknowledgement.");
+                        return MacroActionResult.Cancelled();
+                    }
+
+                    if (!context.ForegroundService.IsWindow(targetHwnd))
+                    {
+                        context.Logger?.Warning("[AutoConfirm] Target window closed while waiting for confirmation acknowledgement.");
+                        return MacroActionResult.TargetUnavailable("Target window closed while waiting for confirmation acknowledgement.");
+                    }
+
+                    // Transient pause if target window is minimized during acknowledgement observation
+                    if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                        (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                    {
+                        string minWarn = PolicyMode == ApprovalPolicyMode.FoolMode
+                            ? "[AutoConfirm][FOOL MODE] PAUSED — target window minimized during confirmation acknowledgement."
+                            : "[AutoConfirm] PAUSED — target window minimized during confirmation acknowledgement.";
+                        context.Logger?.Warning(minWarn);
+                        context.ReportProgress("PAUSED — Target minimized");
+
+                        while (context.ForegroundService.IsWindow(targetHwnd) &&
+                               (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                                (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot))))
+                        {
+                            if (ct.IsCancellationRequested)
+                            {
+                                return MacroActionResult.Cancelled();
+                            }
+                            try
+                            {
+                                await Task.Delay(250, ct).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                return MacroActionResult.Cancelled();
+                            }
+                        }
+
+                        if (!context.ForegroundService.IsWindow(targetHwnd))
+                        {
+                            context.Logger?.Warning("[AutoConfirm] Target window closed while minimized during confirmation acknowledgement.");
+                            return MacroActionResult.TargetUnavailable("Target window closed while minimized during confirmation acknowledgement.");
+                        }
+
+                        context.ReportProgress(ackPendingProgress);
+                    }
+
+                    try
+                    {
+                        await Task.Delay(PollInterval, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+
+                    if (!context.ForegroundService.IsWindow(targetHwnd))
+                    {
+                        context.Logger?.Warning("[AutoConfirm] Target window closed while waiting for confirmation acknowledgement.");
+                        return MacroActionResult.TargetUnavailable("Target window closed while waiting for confirmation acknowledgement.");
+                    }
+
+                    if (!longPendingWarningLogged && ackSw.ElapsedMilliseconds >= 10000)
+                    {
+                        longPendingWarningLogged = true;
+                        context.Logger?.Warning("[AutoConfirm] Confirmation acknowledgement is still pending. Enter was already dispatched; no retry will be attempted.");
+                    }
+
+                    TextDetectionResult pendingDetect;
+                    try
+                    {
+                        pendingDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                    catch (Exception ex)
+                    {
+                        context.Logger?.Warning($"[AutoConfirm] Detector failure during confirmation acknowledgement: {ex.Message}");
+                        return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
+                    }
+
+                    if (!pendingDetect.Matched)
+                    {
+                        // Case A: Original prompt disappeared
+                        promptAcknowledged = true;
+                        break;
+                    }
+
+                    string currentRaw = pendingDetect.RawText ?? pendingDetect.ObservedText ?? string.Empty;
+                    var currentExtraction = context.CommandPromptParser.Parse(currentRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
+                    var currentSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, currentRaw, currentExtraction);
+                    string currentFingerprint = currentSnapshot.Envelope?.ComputePromptFingerprint()
+                        ?? $"{currentSnapshot.CommandText}\n{currentSnapshot.PromptText}\n{currentSnapshot.SelectedOptionText}";
+
+                    if (!string.Equals(currentFingerprint, initialFingerprint, StringComparison.Ordinal))
+                    {
+                        // Case B: Different authoritative permission prompt replaces A
+                        promptAcknowledged = true;
+                        break;
+                    }
+
+                    // Case C: Same fingerprint remains -> keep waiting in PAUSED_ACK_PENDING
+                }
             }
 
             if (PolicyMode == ApprovalPolicyMode.FoolMode)

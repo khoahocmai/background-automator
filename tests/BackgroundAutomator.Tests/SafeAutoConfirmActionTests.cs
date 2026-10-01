@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BackgroundAutomator.Core.Approval;
 using BackgroundAutomator.Core.Capture;
 using BackgroundAutomator.Core.Clicking;
@@ -198,14 +199,14 @@ public class SafeAutoConfirmActionTests
         return (context, fgService, fgKb, elevService, actService);
     }
 
-    private static CommandApprovalRule CreateRule() => new()
+    private static CommandApprovalRule CreateRule(string allowedCmd = "dotnet test BackgroundAutomator.sln") => new()
     {
         Name = "Approve tests",
         ExpectedProcess = "WindowsTerminal.exe",
         ExpectedWindowClass = "CASCADIA",
         ExpectedPrompt = "Run this command?",
         ExpectedSelectedOption = "Yes, run command",
-        AllowedCommand = "dotnet test BackgroundAutomator.sln",
+        AllowedCommand = allowedCmd,
         CommandMatchMode = CommandMatchMode.Exact,
         Enabled = true
     };
@@ -328,6 +329,7 @@ Run this command?
         _ = Task.Run(async () =>
         {
             await Task.Delay(100);
+            fgService.CurrentForeground = (IntPtr)0x8888;
             fgService.ShouldFailActivation = false;
         });
 
@@ -583,7 +585,7 @@ Run this command?
     }
 
     [Fact]
-    public async Task Confirmation_Not_Acknowledged_When_Prompt_Persists_After_Enter()
+    public async Task Confirmation_PromptPersists_TransitionsToPausedAckPending_AndDoesNotSendDuplicateEnter()
     {
         IntPtr targetHwnd = (IntPtr)0x1111;
         string promptText = @"
@@ -598,6 +600,9 @@ Run this command?
             Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
 
         var (context, fgService, fgKb, _) = CreateTestContext(detector, targetHwnd);
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
         var rule = CreateRule();
 
         var action = new SafeAutoConfirmAction(
@@ -606,12 +611,368 @@ Run this command?
             timeout: TimeSpan.FromSeconds(2),
             pollInterval: TimeSpan.FromMilliseconds(20));
 
-        var result = await action.ExecuteAsync(context, CancellationToken.None);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(2200));
+
+        var result = await action.ExecuteAsync(context, cts.Token);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal(MacroActionStatus.ApprovalBlocked, result.Status);
-        Assert.Contains("ConfirmationNotAcknowledged", result.Message);
-        Assert.Equal(1, fgKb.SendEnterCallCount); // Enter was sent, but duplicate was prevented
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Waiting for confirmation acknowledgement"));
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Enter was sent once, duplicate was prevented
+    }
+
+    // Part B #11: Fast Ack - Prompt disappears quickly.
+    [Fact]
+    public async Task PartB_11_FastAck_PromptDisappearsQuickly_ReturnsSuccess_EnterCountOne_NoPausedAckPending()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKb.SendEnterCallCount > 0)
+                return Task.FromResult(TextDetectionResult.NotFound()); // Disappears immediately on Enter
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Success, result.Status);
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Max one Enter
+        Assert.DoesNotContain(progressList, p => p.Contains("Waiting for confirmation acknowledgement"));
+    }
+
+    // Part B #12: Slow Ack - Mandatory - Prompt remains past fast ack (~2s), transitions to PAUSED_ACK_PENDING, then disappears.
+    [Fact]
+    public async Task PartB_12_SlowAck_PromptDisappearsAfterFastAckWindow_ReturnsSuccess_EnterCountOne()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var sw = Stopwatch.StartNew();
+        long enterSentTimeMs = 0;
+
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKb.SendEnterCallCount > 0)
+            {
+                if (enterSentTimeMs == 0)
+                    enterSentTimeMs = sw.ElapsedMilliseconds;
+
+                // Prompt remains visible for 2200ms after Enter (exceeding 2000ms fast ack window)
+                if (sw.ElapsedMilliseconds - enterSentTimeMs < 2200)
+                {
+                    return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+                }
+                return Task.FromResult(TextDetectionResult.NotFound());
+            }
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(10),
+            pollInterval: TimeSpan.FromMilliseconds(50));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Success, result.Status);
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Exactly 1 Enter
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Waiting for confirmation acknowledgement"));
+    }
+
+    // Part B #13: Prompt Remains Indefinitely - Action remains PAUSED_ACK_PENDING, no ApprovalBlocked, Enter count = 1.
+    [Fact]
+    public async Task PartB_13_PromptRemainsIndefinitely_RemainsAckPending_NoApprovalBlocked_EnterCountOne()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var progressList = new List<string>();
+        context.ProgressCallback = p => progressList.Add(p);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(2300));
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.NotEqual(MacroActionStatus.ApprovalBlocked, result.Status);
+        Assert.Contains(progressList, p => p.Contains("PAUSED — Waiting for confirmation acknowledgement"));
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    // Part B #14: Prompt A Replaced by Prompt B - Action A completes with Success, does NOT approve B, Enter count = 1.
+    [Fact]
+    public async Task PartB_14_PromptA_ReplacedByPromptB_ActionACompletes_DoesNotApproveB_EnterCountOne()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptA = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+        string promptB = @"
+rm -rf /
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (fgKb.SendEnterCallCount > 0)
+            {
+                // After Enter for A, Prompt B appears!
+                return Task.FromResult(TextDetectionResult.Success(promptB, promptB));
+            }
+            return Task.FromResult(TextDetectionResult.Success(promptA, promptA));
+        });
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Success, result.Status);
+        Assert.Contains("git status", result.Message);
+        Assert.DoesNotContain("rm -rf", result.Message);
+        Assert.Equal(1, fgKb.SendEnterCallCount); // Enter sent exactly once for Action A, never for B
+    }
+
+    // Part B #15: Cancellation while acknowledgement pending - Cancelled promptly, no second Enter.
+    [Fact]
+    public async Task PartB_15_Cancellation_WhileAckPending_CancelledPromptly_NoSecondEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        using var cts = new CancellationTokenSource();
+        // Cancel after 2100ms (in PAUSED_ACK_PENDING)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(2100);
+            cts.Cancel();
+        });
+
+        var result = await action.ExecuteAsync(context, cts.Token);
+
+        Assert.Equal(MacroActionStatus.Cancelled, result.Status);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    // Part B #16: Target Closed while acknowledgement pending - TargetUnavailable, no second Enter.
+    [Fact]
+    public async Task PartB_16_TargetClosed_WhileAckPending_ReturnsTargetUnavailable_NoSecondEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        var detector = new FakeTextDetector((hwnd, req) =>
+            Task.FromResult(TextDetectionResult.Success(promptText, promptText)));
+
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            new InMemoryLogger(),
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        // Window closes after 2100ms (in PAUSED_ACK_PENDING)
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(2100);
+            fgService.WindowClosed = true;
+        });
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.Equal(MacroActionStatus.TargetUnavailable, result.Status);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+    }
+
+    // Part B #17: Target Minimized while acknowledgement pending - Pauses and resumes when restored, no second Enter.
+    [Fact]
+    public async Task PartB_17_TargetMinimized_WhileAckPending_PausesAndResumesWhenRestored_NoSecondEnter()
+    {
+        IntPtr targetHwnd = (IntPtr)0x1111;
+        string promptText = @"
+git status
+
+Run this command?
+> 1. Yes, run command
+";
+
+        var (context, fgService, fgKb, _) = CreateTestContext(null!, targetHwnd);
+        bool promptDismissed = false;
+        var detector = new FakeTextDetector((hwnd, req) =>
+        {
+            if (promptDismissed)
+                return Task.FromResult(TextDetectionResult.NotFound());
+            return Task.FromResult(TextDetectionResult.Success(promptText, promptText));
+        });
+
+        var logger = new InMemoryLogger();
+        context = new MacroExecutionContext(
+            new NullClicker(),
+            new NullCaptureService(),
+            logger,
+            targetHwnd,
+            foregroundKeyboard: fgKb,
+            foregroundService: fgService,
+            textDetector: detector);
+
+        var rule = CreateRule(allowedCmd: "git status");
+        var action = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            timeout: TimeSpan.FromSeconds(5),
+            pollInterval: TimeSpan.FromMilliseconds(20));
+
+        // At 2100ms (in PAUSED_ACK_PENDING), window is minimized; at 2500ms restored; at 2700ms prompt disappears
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(2100);
+            fgService.IsMinimized = true;
+            await Task.Delay(400);
+            fgService.IsMinimized = false;
+            await Task.Delay(200);
+            promptDismissed = true;
+        });
+
+        var result = await action.ExecuteAsync(context, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(MacroActionStatus.Success, result.Status);
+        Assert.Equal(1, fgKb.SendEnterCallCount);
+        Assert.True(fgKb.SendEnterCallCount <= 1);
     }
 
     [Fact]
