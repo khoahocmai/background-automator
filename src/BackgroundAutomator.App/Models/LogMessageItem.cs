@@ -1,4 +1,4 @@
-﻿using BackgroundAutomator.Core.Logging;
+using BackgroundAutomator.Core.Logging;
 
 namespace BackgroundAutomator.App.Models;
 
@@ -28,6 +28,20 @@ public sealed class LogMessageItem
     public string Message { get; }
     public string? ExceptionDetails { get; }
     public string FormattedLine => $"[{TimestampFormatted}] [{LevelString}] {Message}{(string.IsNullOrEmpty(ExceptionDetails) ? "" : $" -> {ExceptionDetails}")}";
+
+    /// <summary>
+    /// Formats the log item for clipboard copying according to chronological diagnostics specification:
+    /// HH:mm:ss.fff [LEVEL] FullMessage
+    /// </summary>
+    public string FormatForClipboard()
+    {
+        string line = $"{TimestampFormatted} [{LevelString}] {Message}";
+        if (!string.IsNullOrEmpty(ExceptionDetails))
+        {
+            line += $" -> {ExceptionDetails}";
+        }
+        return line;
+    }
 
     public LogMessageItem(LogEntry entry)
     {
