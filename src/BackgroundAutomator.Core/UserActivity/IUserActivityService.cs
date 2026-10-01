@@ -14,7 +14,14 @@ public interface IUserActivityService
 
     /// <summary>
     /// Informs the service that synthetic input was injected by the automation,
-    /// preventing injected keystrokes from being falsely recognized as user physical activity.
+    /// providing the physical user idle duration captured immediately prior to injection.
+    /// Prevents injected keystrokes from being falsely recognized as user physical activity.
+    /// </summary>
+    /// <param name="idleDurationBeforeInjection">Physical idle duration captured before input injection.</param>
+    void NotifyInputInjected(TimeSpan idleDurationBeforeInjection);
+
+    /// <summary>
+    /// Informs the service that synthetic input was injected by the automation.
     /// </summary>
     void NotifyInputInjected();
 }

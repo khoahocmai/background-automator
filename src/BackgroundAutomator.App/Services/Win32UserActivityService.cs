@@ -12,7 +12,12 @@ namespace BackgroundAutomator.App.Services;
 /// </summary>
 public sealed class Win32UserActivityService : IUserActivityService
 {
+    public delegate bool GetLastInputInfoDelegate(ref LASTINPUTINFO plii);
+    public delegate uint GetTickCountDelegate();
+
     private readonly IAppLogger? _logger;
+    private readonly GetLastInputInfoDelegate _getLastInputInfo;
+    private readonly GetTickCountDelegate _getTickCount;
     private bool _hasLoggedFailure;
 
     private uint? _lastInjectedTick;
@@ -20,14 +25,24 @@ public sealed class Win32UserActivityService : IUserActivityService
     private readonly Stopwatch _injectionStopwatch = new();
 
     public Win32UserActivityService(IAppLogger? logger = null)
+        : this(User32.GetLastInputInfo, () => unchecked((uint)Environment.TickCount), logger)
     {
+    }
+
+    public Win32UserActivityService(
+        GetLastInputInfoDelegate getLastInputInfo,
+        GetTickCountDelegate getTickCount,
+        IAppLogger? logger = null)
+    {
+        _getLastInputInfo = getLastInputInfo;
+        _getTickCount = getTickCount;
         _logger = logger;
     }
 
     public bool TryGetIdleDuration(out TimeSpan idleDuration)
     {
         var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
-        if (!User32.GetLastInputInfo(ref lii))
+        if (!_getLastInputInfo(ref lii))
         {
             if (!_hasLoggedFailure)
             {
@@ -41,51 +56,49 @@ public sealed class Win32UserActivityService : IUserActivityService
 
         _hasLoggedFailure = false;
 
-        // Check if the most recent system input event was our own SendInput injection
+        // Check if the most recent system input event matches our recorded SendInput injection tick exactly.
+        // NOTE ON WIN32 LIMITATION: If a physical user input occurs at the exact same millisecond tick value
+        // as the injected SendInput, Windows GetLastInputInfo returns that tick value and cannot distinguish
+        // between the two. In that rare same-tick event, the synthetic correction applies until the next input.
         if (_lastInjectedTick.HasValue)
         {
-            uint diffFromInjected = unchecked(lii.dwTime - _lastInjectedTick.Value);
-            // If the tick corresponds to our injected input (or within a 100ms tolerance),
-            // no new physical user input has arrived since injection.
-            if (diffFromInjected <= 100)
+            if (lii.dwTime == _lastInjectedTick.Value)
             {
+                // The most recent input in the system is still our own injected input.
+                // Derive idle duration from the pre-injection idle duration + time elapsed since injection.
                 idleDuration = _baseIdleDurationBeforeInjection + _injectionStopwatch.Elapsed;
                 return true;
             }
 
-            // User has generated physical input after our injection
+            // A newer input event has occurred (different tick). Clear synthetic state immediately.
             _lastInjectedTick = null;
             _injectionStopwatch.Reset();
         }
 
-        uint currentTick = unchecked((uint)Environment.TickCount);
+        uint currentTick = _getTickCount();
         uint elapsedMs = unchecked(currentTick - lii.dwTime);
         idleDuration = TimeSpan.FromMilliseconds(elapsedMs);
         return true;
     }
 
-    public void NotifyInputInjected()
+    public void NotifyInputInjected(TimeSpan idleDurationBeforeInjection)
     {
-        // Capture user idle duration before injection as baseline
-        if (TryGetIdleDuration(out var currentIdle))
-        {
-            _baseIdleDurationBeforeInjection = currentIdle;
-        }
-        else
-        {
-            _baseIdleDurationBeforeInjection = TimeSpan.FromSeconds(2);
-        }
-
+        _baseIdleDurationBeforeInjection = idleDurationBeforeInjection;
         _injectionStopwatch.Restart();
 
         var lii = new LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf<LASTINPUTINFO>() };
-        if (User32.GetLastInputInfo(ref lii))
+        if (_getLastInputInfo(ref lii))
         {
             _lastInjectedTick = lii.dwTime;
         }
         else
         {
-            _lastInjectedTick = unchecked((uint)Environment.TickCount);
+            _lastInjectedTick = _getTickCount();
         }
+    }
+
+    public void NotifyInputInjected()
+    {
+        NotifyInputInjected(TimeSpan.Zero);
     }
 }

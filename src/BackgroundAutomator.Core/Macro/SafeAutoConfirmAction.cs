@@ -464,9 +464,10 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return MacroActionResult.ApprovalBlocked("UIPI mismatch: Target is running as Administrator while BackgroundAutomator is not. Foreground activation blocked.");
         }
 
-        IntPtr previousForeground = context.ForegroundService.GetForegroundWindow();
-        bool isAlreadyForeground = (previousForeground == effectiveRoot || previousForeground == targetHwnd);
-        context.Logger?.Info($"[AutoConfirm] previous foreground = 0x{previousForeground.ToInt64():X8}{(isAlreadyForeground ? " (target is already foreground)" : string.Empty)}");
+        IntPtr restoreTargetHwnd = IntPtr.Zero;
+        IntPtr initialFg = context.ForegroundService.GetForegroundWindow();
+        bool isAlreadyForeground = (initialFg == effectiveRoot || initialFg == targetHwnd);
+        context.Logger?.Info($"[AutoConfirm] initial foreground = 0x{initialFg.ToInt64():X8}{(isAlreadyForeground ? " (target is already foreground)" : string.Empty)}");
 
         var pulseSw = Stopwatch.StartNew();
         long activationConfirmedAtMs = 0;
@@ -475,8 +476,6 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         bool foregroundRestored = false;
         bool wasActivated = false;
 
-        int retryIndex = 0;
-        int[] retryBackoffs = [500, 750, 1000];
         bool foregroundAcquired = isAlreadyForeground;
         bool pausedLogged = false;
         bool userActivePausedLogged = false;
@@ -745,6 +744,20 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 }
             }
 
+            // Immediately before ActivateWindow, capture pulse-local restoreTargetHwnd
+            IntPtr fgBeforeActivate = context.ForegroundService.GetForegroundWindow();
+            if (fgBeforeActivate == effectiveRoot || fgBeforeActivate == targetHwnd)
+            {
+                context.Logger?.Info("[AutoConfirm] Target became foreground; skipping focus pulse.");
+                foregroundAcquired = true;
+                isAlreadyForeground = true;
+                restoreTargetHwnd = IntPtr.Zero;
+                break;
+            }
+
+            restoreTargetHwnd = fgBeforeActivate;
+            context.Logger?.Info($"[AutoConfirm] Capturing restore target = 0x{restoreTargetHwnd.ToInt64():X8} immediately prior to activation.");
+
             // Try to activate
             bool activated = context.ForegroundService.ActivateWindow(effectiveRoot);
             if (activated)
@@ -780,58 +793,115 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             {
                 pausedLogged = true;
                 string warnMsg = PolicyMode == ApprovalPolicyMode.FoolMode
-                    ? "[AutoConfirm][FOOL MODE] PAUSED — Windows denied foreground activation; waiting to retry safely."
-                    : "[AutoConfirm] PAUSED — Windows denied foreground activation; waiting to retry safely.";
+                    ? "[AutoConfirm][FOOL MODE] PAUSED — Windows denied foreground activation; waiting for state change before retrying."
+                    : "[AutoConfirm] PAUSED — Windows denied foreground activation; waiting for state change before retrying.";
                 context.Logger?.Warning(warnMsg);
             }
             context.ReportProgress("PAUSED — Waiting for Terminal focus");
 
-            int delayMs = retryBackoffs[Math.Min(retryIndex, retryBackoffs.Length - 1)];
-            retryIndex++;
+            // Wait for meaningful state change without repeatedly hammering SetForegroundWindow
+            IntPtr deniedFgHwnd = restoreTargetHwnd;
+            var denialPromptRecheckSw = Stopwatch.StartNew();
 
-            try
+            while (true)
             {
-                await Task.Delay(delayMs, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return MacroActionResult.Cancelled();
-            }
+                if (ct.IsCancellationRequested)
+                {
+                    return MacroActionResult.Cancelled();
+                }
 
-            // Re-read visible viewport to ensure prompt has not disappeared or changed while waiting
-            TextDetectionResult recheckDetect;
-            try
-            {
-                recheckDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return MacroActionResult.Cancelled();
-            }
-            catch (Exception ex)
-            {
-                context.Logger?.Warning($"[AutoConfirm] Detector failure during foreground retry: {ex.Message}");
-                return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
-            }
+                if (!context.ForegroundService.IsWindow(targetHwnd))
+                {
+                    return MacroActionResult.TargetUnavailable("Target window closed during foreground acquisition.");
+                }
 
-            if (!recheckDetect.Matched)
-            {
-                context.Logger?.Info("[AutoConfirm] Foreground wait ended because the permission prompt is no longer active.");
-                return null;
-            }
+                if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                    (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                {
+                    break;
+                }
 
-            // Re-evaluate with fresh viewport
-            string recheckRaw = recheckDetect.RawText ?? recheckDetect.ObservedText ?? string.Empty;
-            var recheckExtraction = context.CommandPromptParser.Parse(recheckRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
-            var recheckSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, recheckRaw, recheckExtraction);
-            string recheckProc = context.ForegroundService.GetProcessName(targetHwnd);
-            string recheckClass = context.ForegroundService.GetWindowClass(targetHwnd);
+                IntPtr checkFg = context.ForegroundService.GetForegroundWindow();
 
-            var recheckDecision = CommandApprovalEvaluator.Evaluate(RuleSet, recheckSnapshot, recheckProc, recheckClass, PolicyMode);
-            if (!recheckDecision.IsAllowed)
-            {
-                context.Logger?.Info($"[AutoConfirm] Prompt changed during foreground wait: {recheckDecision.BlockReason} — {recheckDecision.Explanation}");
-                return null;
+                // 1. Natural foreground acquisition
+                if (checkFg == effectiveRoot || checkFg == targetHwnd)
+                {
+                    context.Logger?.Info("[AutoConfirm] Target acquired foreground naturally while waiting; proceeding.");
+                    foregroundAcquired = true;
+                    isAlreadyForeground = true;
+                    restoreTargetHwnd = IntPtr.Zero;
+                    break;
+                }
+
+                // 2. User resumed physical activity
+                if (RespectUserFocus && context.UserActivityService != null &&
+                    context.UserActivityService.TryGetIdleDuration(out var denialIdle) &&
+                    denialIdle < UserIdleThreshold)
+                {
+                    context.Logger?.Info("[AutoConfirm] User activity detected while waiting for focus; transitioning to PAUSED_USER_ACTIVE.");
+                    userActivePausedLogged = false;
+                    pausedLogged = false;
+                    break;
+                }
+
+                // 3. Foreground window changed to another application
+                if (checkFg != deniedFgHwnd)
+                {
+                    context.Logger?.Info($"[AutoConfirm] Foreground window changed (0x{deniedFgHwnd.ToInt64():X8} -> 0x{checkFg.ToInt64():X8}); resetting activation opportunity.");
+                    pausedLogged = false;
+                    break;
+                }
+
+                // Periodic prompt re-validation while waiting
+                int checkIntervalMs = Math.Min(200, Math.Max(20, (int)PollInterval.TotalMilliseconds));
+                if (denialPromptRecheckSw.ElapsedMilliseconds >= checkIntervalMs)
+                {
+                    denialPromptRecheckSw.Restart();
+                    TextDetectionResult promptRecheck;
+                    try
+                    {
+                        promptRecheck = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+                    catch (Exception ex)
+                    {
+                        context.Logger?.Warning($"[AutoConfirm] Detector failure during foreground retry: {ex.Message}");
+                        return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
+                    }
+
+                    if (!promptRecheck.Matched)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Foreground wait ended because permission prompt is no longer active.");
+                        return null;
+                    }
+
+                    // Re-evaluate with fresh viewport
+                    string recheckRaw = promptRecheck.RawText ?? promptRecheck.ObservedText ?? string.Empty;
+                    var recheckExtraction = context.CommandPromptParser.Parse(recheckRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
+                    var recheckSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, recheckRaw, recheckExtraction);
+                    string recheckProc = context.ForegroundService.GetProcessName(targetHwnd);
+                    string recheckClass = context.ForegroundService.GetWindowClass(targetHwnd);
+
+                    var recheckDecision = CommandApprovalEvaluator.Evaluate(RuleSet, recheckSnapshot, recheckProc, recheckClass, PolicyMode);
+                    if (!recheckDecision.IsAllowed)
+                    {
+                        context.Logger?.Info($"[AutoConfirm] Prompt changed during foreground wait: {recheckDecision.BlockReason} — {recheckDecision.Explanation}");
+                        return null;
+                    }
+                }
+
+                int waitDelayMs = Math.Min(100, Math.Max(20, (int)PollInterval.TotalMilliseconds));
+                try
+                {
+                    await Task.Delay(waitDelayMs, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return MacroActionResult.Cancelled();
+                }
             }
         }
 
@@ -921,6 +991,13 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 context.Logger?.Warning($"WARNING [AutoConfirm][FOOL MODE] approving unrestricted command: \"{cmdLog}\"");
             }
 
+            // Capture pre-injection idle duration before dispatching SendInput
+            TimeSpan preInjectionIdle = TimeSpan.Zero;
+            if (context.UserActivityService != null && context.UserActivityService.TryGetIdleDuration(out var capturedIdle))
+            {
+                preInjectionIdle = capturedIdle;
+            }
+
             if (DeliveryMode == KeyDeliveryMode.ForegroundPulse)
             {
                 bool sent = context.ForegroundKeyboard.SendEnter();
@@ -936,21 +1013,26 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             }
 
             enterSentAtMs = pulseSw.ElapsedMilliseconds;
-            context.UserActivityService?.NotifyInputInjected();
+            context.UserActivityService?.NotifyInputInjected(preInjectionIdle);
             context.Logger?.Info($"[AutoConfirm] Enter sent (+{enterSentAtMs}ms)");
 
             // FastPulse optimization: Restore previous foreground IMMEDIATELY after Enter!
             if (FocusBehavior == FocusBehavior.FastPulse &&
                 !isAlreadyForeground &&
-                previousForeground != IntPtr.Zero &&
-                previousForeground != targetHwnd &&
-                previousForeground != effectiveRoot)
+                restoreTargetHwnd != IntPtr.Zero &&
+                restoreTargetHwnd != targetHwnd &&
+                restoreTargetHwnd != effectiveRoot)
             {
-                if (context.ForegroundService.IsWindow(previousForeground))
+                IntPtr currentFg = context.ForegroundService.GetForegroundWindow();
+                if (currentFg != effectiveRoot && currentFg != targetHwnd)
+                {
+                    context.Logger?.Info("[AutoConfirm] User changed foreground during pulse; skipping automatic restoration.");
+                }
+                else if (context.ForegroundService.IsWindow(restoreTargetHwnd))
                 {
                     try
                     {
-                        bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
+                        bool restored = context.ForegroundService.RestoreForegroundWindow(restoreTargetHwnd);
                         previousRestoredAtMs = pulseSw.ElapsedMilliseconds;
                         foregroundRestored = true;
                         if (restored)
@@ -1046,15 +1128,20 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 !isAlreadyForeground &&
                 !foregroundRestored &&
                 FocusBehavior == FocusBehavior.FastPulse &&
-                previousForeground != IntPtr.Zero &&
-                previousForeground != targetHwnd &&
-                previousForeground != effectiveRoot)
+                restoreTargetHwnd != IntPtr.Zero &&
+                restoreTargetHwnd != targetHwnd &&
+                restoreTargetHwnd != effectiveRoot)
             {
-                if (context.ForegroundService.IsWindow(previousForeground))
+                IntPtr currentFg = context.ForegroundService.GetForegroundWindow();
+                if (currentFg != effectiveRoot && currentFg != targetHwnd)
+                {
+                    context.Logger?.Info("[AutoConfirm] User changed foreground during pulse; skipping automatic restoration in cleanup.");
+                }
+                else if (context.ForegroundService.IsWindow(restoreTargetHwnd))
                 {
                     try
                     {
-                        bool restored = context.ForegroundService.RestoreForegroundWindow(previousForeground);
+                        bool restored = context.ForegroundService.RestoreForegroundWindow(restoreTargetHwnd);
                         if (restored)
                         {
                             context.Logger?.Info("[AutoConfirm] previous foreground restored in cleanup");
