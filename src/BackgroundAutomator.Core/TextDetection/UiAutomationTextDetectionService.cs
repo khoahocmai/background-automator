@@ -94,10 +94,68 @@ public sealed class UiAutomationTextDetectionService : ITextDetectionService
             try
             {
                 var termCond = new PropertyCondition(AutomationElement.ClassNameProperty, "TermControl");
-                var termControl = root.FindFirst(TreeScope.Descendants, termCond);
-                if (termControl != null && TryEvaluateElement(termControl, request, out TextDetectionResult? termResult))
+                var termControls = root.FindAll(TreeScope.Descendants, termCond);
+                if (termControls != null && termControls.Count > 0)
                 {
-                    return termResult!;
+                    var paneList = new List<TerminalPaneInfo>();
+                    TextDetectionResult? firstMatchResult = null;
+
+                    for (int i = 0; i < termControls.Count; i++)
+                    {
+                        var tc = termControls[i];
+                        try
+                        {
+                            bool hasFocus = tc.Current.HasKeyboardFocus;
+                            var bounds = tc.Current.BoundingRectangle;
+                            string clsName = tc.Current.ClassName;
+
+                            string paneRawText = string.Empty;
+                            if (tc.TryGetCurrentPattern(TextPattern.Pattern, out object tpObj) && tpObj is TextPattern tp)
+                            {
+                                if (request.Scope == TextDetectionScope.VisibleViewportOnly)
+                                {
+                                    var visRanges = tp.GetVisibleRanges();
+                                    if (visRanges != null && visRanges.Length > 0)
+                                    {
+                                        var sb = new StringBuilder();
+                                        foreach (var r in visRanges)
+                                        {
+                                            sb.Append(r.GetText(-1));
+                                        }
+                                        paneRawText = sb.ToString();
+                                    }
+                                }
+                                else
+                                {
+                                    paneRawText = tp.DocumentRange.GetText(-1) ?? string.Empty;
+                                }
+                            }
+
+                            var paneInfo = new TerminalPaneInfo(paneRawText, hasFocus, bounds, tc, clsName);
+                            paneList.Add(paneInfo);
+
+                            if (!string.IsNullOrEmpty(paneRawText) &&
+                                TextMatcher.IsMatch(paneRawText, request.ExpectedText, request.MatchMode))
+                            {
+                                firstMatchResult ??= TextDetectionResult.Success(paneRawText, paneRawText);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.Debug($"Error reading TermControl [{i}]: {ex.Message}");
+                        }
+                    }
+
+                    if (paneList.Count > 0)
+                    {
+                        if (firstMatchResult != null)
+                        {
+                            return TextDetectionResult.Success(firstMatchResult.ObservedText!, firstMatchResult.RawText, paneList);
+                        }
+
+                        string lastText = paneList[^1].RawText;
+                        return TextDetectionResult.NotFound(lastText, $"Expected text '{request.ExpectedText}' was not found in terminal pane(s).", lastText, paneList);
+                    }
                 }
             }
             catch (Exception ex)
