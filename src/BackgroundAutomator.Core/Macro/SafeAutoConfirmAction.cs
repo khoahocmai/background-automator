@@ -318,21 +318,45 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.TextDetectionFailed($"Text detection failed: {ex.Message}");
             }
 
+            bool promptFound = false;
+            CommandPromptSnapshot? snapshot = null;
+            ApprovalDecision? decision = null;
+
             if (detectResult.Matched)
             {
-                string rawText = detectResult.RawText ?? detectResult.ObservedText ?? string.Empty;
-                var extraction = context.CommandPromptParser.Parse(
-                    rawText,
-                    RuleSet.ExpectedPrompt,
-                    RuleSet.ExpectedSelectedOption);
+                if (detectResult.TerminalPanes != null && detectResult.TerminalPanes.Count > 0)
+                {
+                    var matchingPanes = FindMatchingPromptPanes(detectResult.TerminalPanes, context, targetHwnd);
+                    if (matchingPanes.Count > 1)
+                    {
+                        context.Logger?.Warning("[AutoConfirm] Multiple terminal panes contain approval prompts. Fail closed.");
+                        return MacroActionResult.ApprovalBlocked("Multiple terminal panes contain approval prompts.");
+                    }
+                    if (matchingPanes.Count == 1)
+                    {
+                        snapshot = matchingPanes[0].Snapshot;
+                        decision = matchingPanes[0].Decision;
+                        promptFound = true;
+                    }
+                }
+                else
+                {
+                    string rawText = detectResult.RawText ?? detectResult.ObservedText ?? string.Empty;
+                    var extraction = context.CommandPromptParser.Parse(
+                        rawText,
+                        RuleSet.ExpectedPrompt,
+                        RuleSet.ExpectedSelectedOption);
 
-                var snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, rawText, extraction);
+                    snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, rawText, extraction);
+                    string actualProc = context.ForegroundService.GetProcessName(targetHwnd);
+                    string actualClass = context.ForegroundService.GetWindowClass(targetHwnd);
+                    decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
+                    promptFound = true;
+                }
+            }
 
-                string actualProc = context.ForegroundService.GetProcessName(targetHwnd);
-                string actualClass = context.ForegroundService.GetWindowClass(targetHwnd);
-
-                var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
-
+            if (promptFound && snapshot != null && decision != null)
+            {
                 if (decision.IsAllowed)
                 {
                     string commandDisplay = snapshot.CommandText
@@ -399,7 +423,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                         context.Logger?.Info($"[AutoConfirm] BLOCKED — {currentReason}");
                     }
 
-                    string liveStatus = FormatLiveBlocker(decision.BlockReason, decision.Explanation, extraction);
+                    string liveStatus = FormatLiveBlocker(decision.BlockReason, decision.Explanation, snapshot.AmbiguityReason);
                     context.ReportProgress(liveStatus);
                 }
             }
@@ -954,15 +978,114 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 return MacroActionResult.ApprovalBlocked("UIPI mismatch detected during revalidation. Foreground input blocked.");
             }
 
-            string revalRaw = revalDetect.RawText ?? revalDetect.ObservedText ?? string.Empty;
-            var revalExtraction = context.CommandPromptParser.Parse(revalRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
-            var revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
+            CommandPromptSnapshot revalSnapshot;
+            ApprovalDecision? revalDecision = null;
 
-            var revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass, PolicyMode);
-            if (!revalDecision.IsAllowed)
+            if (revalDetect.TerminalPanes != null && revalDetect.TerminalPanes.Count > 0)
             {
-                context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
-                return MacroActionResult.ApprovalBlocked($"Rule revalidation failed: {revalDecision.Explanation}");
+                var revalPanes = FindMatchingPromptPanes(revalDetect.TerminalPanes, context, targetHwnd);
+                if (revalPanes.Count > 1)
+                {
+                    context.Logger?.Warning("[AutoConfirm] Multiple terminal panes contain approval prompts during revalidation. Fail closed.");
+                    return MacroActionResult.ApprovalBlocked("Multiple terminal panes contain approval prompts.");
+                }
+                if (revalPanes.Count == 0)
+                {
+                    context.Logger?.Info("[AutoConfirm] Prompt disappeared or changed after foreground activation.");
+                    return null;
+                }
+
+                var promptPaneMatch = revalPanes[0];
+                var activePromptPane = promptPaneMatch.Pane;
+                revalSnapshot = promptPaneMatch.Snapshot;
+                revalDecision = promptPaneMatch.Decision;
+
+                // Section A6, A7, A8: Verify that the prompt pane has keyboard focus!
+                if (!activePromptPane.HasKeyboardFocus)
+                {
+                    string unfocusedMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                        ? "⚠ FOOL MODE — PAUSED: Prompt detected in inactive pane. Click pane to focus."
+                        : "PAUSED — Prompt detected in inactive pane. Click pane to focus.";
+                    context.ReportProgress(unfocusedMsg);
+                    context.Logger?.Warning($"[AutoConfirm] {unfocusedMsg}");
+
+                    while (true)
+                    {
+                        if (ct.IsCancellationRequested)
+                        {
+                            return MacroActionResult.Cancelled();
+                        }
+
+                        if (!context.ForegroundService.IsWindow(targetHwnd))
+                        {
+                            return MacroActionResult.TargetUnavailable("Target window closed while waiting for pane focus.");
+                        }
+
+                        if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                            (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                        {
+                            break;
+                        }
+
+                        IntPtr curFg = context.ForegroundService.GetForegroundWindow();
+                        if (curFg != effectiveRoot && curFg != targetHwnd)
+                        {
+                            context.Logger?.Info("[AutoConfirm] Foreground changed while waiting for pane focus; resetting.");
+                            return null;
+                        }
+
+                        try
+                        {
+                            await Task.Delay(50, ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return MacroActionResult.Cancelled();
+                        }
+
+                        var focusPollDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                        if (!focusPollDetect.Matched || focusPollDetect.TerminalPanes == null)
+                        {
+                            context.Logger?.Info("[AutoConfirm] Prompt disappeared while waiting for pane focus.");
+                            return null;
+                        }
+
+                        var focusPromptPanes = FindMatchingPromptPanes(focusPollDetect.TerminalPanes, context, targetHwnd);
+                        if (focusPromptPanes.Count == 0)
+                        {
+                            context.Logger?.Info("[AutoConfirm] Prompt no longer valid while waiting for pane focus.");
+                            return null;
+                        }
+                        if (focusPromptPanes.Count > 1)
+                        {
+                            context.Logger?.Warning("[AutoConfirm] Multiple prompt panes detected while waiting for pane focus.");
+                            return MacroActionResult.ApprovalBlocked("Multiple terminal panes contain approval prompts.");
+                        }
+
+                        var candidate = focusPromptPanes[0];
+                        if (candidate.Pane.HasKeyboardFocus)
+                        {
+                            context.Logger?.Info("[AutoConfirm] Authoritative prompt pane acquired keyboard focus.");
+                            activePromptPane = candidate.Pane;
+                            revalSnapshot = candidate.Snapshot;
+                            revalDecision = candidate.Decision;
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                string revalRaw = revalDetect.RawText ?? revalDetect.ObservedText ?? string.Empty;
+                var revalExtraction = context.CommandPromptParser.Parse(revalRaw, RuleSet.ExpectedPrompt, RuleSet.ExpectedSelectedOption);
+                revalSnapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, revalRaw, revalExtraction);
+
+                revalDecision = CommandApprovalEvaluator.Evaluate(RuleSet, revalSnapshot, freshProc, freshClass, PolicyMode);
+                if (!revalDecision.IsAllowed)
+                {
+                    context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
+                    return MacroActionResult.ApprovalBlocked($"Rule revalidation failed: {revalDecision.Explanation}");
+                }
             }
 
             if (PolicyMode == ApprovalPolicyMode.FoolMode)
@@ -1236,7 +1359,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             }
             else
             {
-                string matchedRuleMsg = !string.IsNullOrEmpty(revalDecision.MatchedRuleName)
+                string matchedRuleMsg = !string.IsNullOrEmpty(revalDecision?.MatchedRuleName)
                     ? $" using rule '{revalDecision.MatchedRuleName}'"
                     : string.Empty;
                 context.Logger?.Info($"[AutoConfirm] Prompt dismissed in {ackSw.ElapsedMilliseconds}ms. Execution confirmed.");
@@ -1281,12 +1404,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
     private static string FormatLiveBlocker(
         ApprovalBlockReason? reason,
         string? explanation,
-        CommandExtractionResult extraction)
+        string? ambiguityReason = null)
     {
         return reason switch
         {
             ApprovalBlockReason.AmbiguousPrompt =>
-                FormatAmbiguousStatus(extraction.AmbiguityReason ?? explanation ?? string.Empty),
+                FormatAmbiguousStatus(ambiguityReason ?? explanation ?? string.Empty),
             ApprovalBlockReason.CommandNotAllowed => "Blocked — Command not allowed",
             ApprovalBlockReason.OptionNotSelected => "Waiting — Option not selected",
             ApprovalBlockReason.CommandNotFound => "Waiting — Command not found",
@@ -1306,5 +1429,49 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             return $"Waiting — Ambiguous command ({match.Groups[1].Value} candidates)";
         }
         return "Waiting — Ambiguous command";
+    }
+
+    private sealed record PromptPaneMatch(TerminalPaneInfo Pane, CommandPromptSnapshot Snapshot, ApprovalDecision? Decision);
+
+    private List<PromptPaneMatch> FindMatchingPromptPanes(
+        IReadOnlyList<TerminalPaneInfo> panes,
+        MacroExecutionContext context,
+        IntPtr targetHwnd)
+    {
+        var matches = new List<PromptPaneMatch>();
+        string actualProc = context.ForegroundService.GetProcessName(targetHwnd);
+        string actualClass = context.ForegroundService.GetWindowClass(targetHwnd);
+
+        foreach (var pane in panes)
+        {
+            if (string.IsNullOrWhiteSpace(pane.RawText))
+                continue;
+
+            var extraction = context.CommandPromptParser.Parse(
+                pane.RawText,
+                RuleSet.ExpectedPrompt,
+                RuleSet.ExpectedSelectedOption);
+
+            if (PolicyMode == ApprovalPolicyMode.FoolMode)
+            {
+                if (extraction.Success)
+                {
+                    var snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, pane.RawText, extraction);
+                    var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
+                    matches.Add(new PromptPaneMatch(pane, snapshot, decision));
+                }
+            }
+            else
+            {
+                var snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, pane.RawText, extraction);
+                var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
+                if (decision.IsAllowed)
+                {
+                    matches.Add(new PromptPaneMatch(pane, snapshot, decision));
+                }
+            }
+        }
+
+        return matches;
     }
 }
