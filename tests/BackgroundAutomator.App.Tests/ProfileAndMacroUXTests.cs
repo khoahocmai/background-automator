@@ -383,4 +383,41 @@ public class ProfileAndMacroUXTests : IDisposable
         Assert.Contains("Ambiguous", vm.RuntimeTargetText);
         Assert.Contains("2", vm.RuntimeTargetText);
     }
+
+    [Fact]
+    public void MacroViewModel_ForegroundPolicy_Controls_IsIdleSettingsEnabled()
+    {
+        var vm = CreateMacroViewModel();
+        Assert.Equal(ForegroundPolicy.AllowIdlePulse, vm.AutoConfirmForegroundPolicy);
+        Assert.True(vm.IsIdleSettingsEnabled);
+
+        vm.AutoConfirmForegroundPolicy = ForegroundPolicy.StrictTerminalForegroundOnly;
+        Assert.False(vm.IsIdleSettingsEnabled);
+
+        vm.AutoConfirmForegroundPolicy = ForegroundPolicy.AllowIdlePulse;
+        Assert.True(vm.IsIdleSettingsEnabled);
+    }
+
+    [Fact]
+    public void MacroViewModel_AddAndEditAction_Preserves_ForegroundPolicy()
+    {
+        var vm = CreateMacroViewModel();
+        vm.AutoConfirmPrompt = "Run this command?";
+        vm.AutoConfirmAllowedCommand = "git status";
+        vm.AutoConfirmForegroundPolicy = ForegroundPolicy.StrictTerminalForegroundOnly;
+
+        vm.AddSafeAutoConfirmAction();
+
+        Assert.Single(vm.Actions);
+        var saca = Assert.IsType<SafeAutoConfirmAction>(vm.Actions[0].Action);
+        Assert.Equal(ForegroundPolicy.StrictTerminalForegroundOnly, saca.ForegroundPolicy);
+        Assert.Contains("[StrictFG]", saca.DisplayString);
+
+        // Reset VM property, then edit the action to verify it repopulates StrictTerminalForegroundOnly
+        vm.AutoConfirmForegroundPolicy = ForegroundPolicy.AllowIdlePulse;
+        vm.EditAction(vm.Actions[0]);
+
+        Assert.Equal(ForegroundPolicy.StrictTerminalForegroundOnly, vm.AutoConfirmForegroundPolicy);
+        Assert.False(vm.IsIdleSettingsEnabled);
+    }
 }

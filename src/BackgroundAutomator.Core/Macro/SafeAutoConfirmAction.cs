@@ -49,6 +49,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
     public bool RespectUserFocus { get; }
     public TimeSpan UserIdleThreshold { get; }
+    public ForegroundPolicy ForegroundPolicy { get; } = ForegroundPolicy.AllowIdlePulse;
 
     public string Name => "Safe Auto Confirm";
 
@@ -58,15 +59,16 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         {
             string waitDisplay = WaitMode == AutoConfirmWaitMode.Indefinite ? "Indefinite" : $"Timeout: {Timeout.TotalSeconds:F0}s";
             string focusDisplay = FocusBehavior == FocusBehavior.KeepTargetForeground ? " [KeepFG]" : string.Empty;
+            string policyDisplay = ForegroundPolicy == ForegroundPolicy.StrictTerminalForegroundOnly ? " [StrictFG]" : string.Empty;
             if (PolicyMode == ApprovalPolicyMode.FoolMode)
             {
-                return $"[{ExecutionMode}][FOOL MODE] \"{RuleSet.Name}\" -> Unrestricted ({waitDisplay}){focusDisplay}";
+                return $"[{ExecutionMode}][FOOL MODE] \"{RuleSet.Name}\" -> Unrestricted ({waitDisplay}){focusDisplay}{policyDisplay}";
             }
             if (RuleSet.Rules.Count == 1)
             {
-                return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay}){focusDisplay}";
+                return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules[0].AllowedCommand} ({waitDisplay}){focusDisplay}{policyDisplay}";
             }
-            return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules.Count} rules ({waitDisplay}){focusDisplay}";
+            return $"[{ExecutionMode}] \"{RuleSet.Name}\" -> {RuleSet.Rules.Count} rules ({waitDisplay}){focusDisplay}{policyDisplay}";
         }
     }
 
@@ -81,7 +83,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         FocusBehavior focusBehavior = FocusBehavior.FastPulse,
         ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules,
         bool respectUserFocus = true,
-        TimeSpan? userIdleThreshold = null)
+        TimeSpan? userIdleThreshold = null,
+        ForegroundPolicy foregroundPolicy = ForegroundPolicy.AllowIdlePulse)
     {
         RuleSet = ruleSet ?? throw new ArgumentNullException(nameof(ruleSet));
         ExecutionMode = executionMode;
@@ -93,6 +96,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         FocusBehavior = focusBehavior;
         PolicyMode = policyMode;
         RespectUserFocus = respectUserFocus;
+        ForegroundPolicy = foregroundPolicy;
 
         if (userIdleThreshold.HasValue)
         {
@@ -117,7 +121,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         FocusBehavior focusBehavior = FocusBehavior.FastPulse,
         ApprovalPolicyMode policyMode = ApprovalPolicyMode.ExactRules,
         bool respectUserFocus = true,
-        TimeSpan? userIdleThreshold = null)
+        TimeSpan? userIdleThreshold = null,
+        ForegroundPolicy foregroundPolicy = ForegroundPolicy.AllowIdlePulse)
         : this(
             ApprovalRuleSet.FromSingleRule(rule ?? throw new ArgumentNullException(nameof(rule))),
             executionMode,
@@ -129,7 +134,8 @@ public sealed class SafeAutoConfirmAction : IMacroAction
             focusBehavior,
             policyMode,
             respectUserFocus,
-            userIdleThreshold)
+            userIdleThreshold,
+            foregroundPolicy)
     {
     }
 
@@ -504,6 +510,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
         bool pausedLogged = false;
         bool userActivePausedLogged = false;
         bool userActivityFailureLogged = false;
+        bool strictPausedLogged = false;
 
         while (!foregroundAcquired)
         {
@@ -575,6 +582,76 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 foregroundAcquired = true;
                 isAlreadyForeground = true;
                 break;
+            }
+
+            // Step 0: Check Foreground Policy
+            if (ForegroundPolicy == ForegroundPolicy.StrictTerminalForegroundOnly)
+            {
+                if (!strictPausedLogged)
+                {
+                    strictPausedLogged = true;
+                    string strictLogMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                        ? "[AutoConfirm][FOOL MODE] PAUSED — Foreground policy requires Terminal to be foreground."
+                        : "[AutoConfirm] PAUSED — Foreground policy requires Terminal to be foreground.";
+                    context.Logger?.Warning(strictLogMsg);
+                }
+
+                string strictProgressMsg = PolicyMode == ApprovalPolicyMode.FoolMode
+                    ? "⚠ FOOL MODE — PAUSED: Waiting for Terminal foreground"
+                    : "PAUSED — Waiting for Terminal foreground";
+                context.ReportProgress(strictProgressMsg);
+
+                while (true)
+                {
+                    if (ct.IsCancellationRequested)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+
+                    if (!context.ForegroundService.IsWindow(targetHwnd))
+                    {
+                        return MacroActionResult.TargetUnavailable("Target window closed while waiting for Terminal foreground.");
+                    }
+
+                    if (context.ForegroundService.IsWindowMinimized(targetHwnd) ||
+                        (effectiveRoot != IntPtr.Zero && context.ForegroundService.IsWindowMinimized(effectiveRoot)))
+                    {
+                        break;
+                    }
+
+                    IntPtr fg = context.ForegroundService.GetForegroundWindow();
+                    if (fg == effectiveRoot || fg == targetHwnd)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Target became foreground naturally; revalidating prompt.");
+                        foregroundAcquired = true;
+                        isAlreadyForeground = true;
+                        restoreTargetHwnd = IntPtr.Zero;
+                        break;
+                    }
+
+                    try
+                    {
+                        await Task.Delay(50, ct).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return MacroActionResult.Cancelled();
+                    }
+
+                    var checkDetect = await context.TextDetector.DetectAsync(targetHwnd, request, ct).ConfigureAwait(false);
+                    if (!checkDetect.Matched)
+                    {
+                        context.Logger?.Info("[AutoConfirm] Foreground wait ended because the permission prompt is no longer active.");
+                        return null;
+                    }
+                }
+
+                if (foregroundAcquired)
+                {
+                    break;
+                }
+
+                continue;
             }
 
             // Step A: Check Respect User Focus Guard

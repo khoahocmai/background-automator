@@ -394,4 +394,48 @@ public class SafeAutoConfirmProfileTests : IDisposable
         var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
         Assert.Equal(TimeSpan.FromMilliseconds(expectedClampedMs), action.UserIdleThreshold);
     }
+
+    [Theory]
+    [InlineData(ForegroundPolicy.AllowIdlePulse)]
+    [InlineData(ForegroundPolicy.StrictTerminalForegroundOnly)]
+    public void MacroActionConfig_RoundTrips_ForegroundPolicy(ForegroundPolicy policy)
+    {
+        var rule = new CommandApprovalRule
+        {
+            Name = "Approve tests",
+            ExpectedProcess = "WindowsTerminal.exe",
+            ExpectedPrompt = "Run this command?",
+            ExpectedSelectedOption = "Yes, run command",
+            AllowedCommand = "dotnet test BackgroundAutomator.sln"
+        };
+
+        var originalAction = new SafeAutoConfirmAction(
+            rule,
+            executionMode: AutoConfirmExecutionMode.Confirm,
+            foregroundPolicy: policy);
+
+        var config = MacroActionConfig.FromMacroAction(originalAction);
+        Assert.Equal(policy.ToString(), config.ForegroundPolicy);
+
+        var restoredAction = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(policy, restoredAction.ForegroundPolicy);
+    }
+
+    [Fact]
+    public void Legacy_SafeAutoConfirm_Without_ForegroundPolicy_Defaults_To_AllowIdlePulse()
+    {
+        string legacyJson = @"{
+  ""actionType"": ""SafeAutoConfirm"",
+  ""ruleName"": ""Legacy Rule"",
+  ""expectedProcess"": ""WindowsTerminal.exe"",
+  ""allowedCommand"": ""Get-Date""
+}";
+
+        var config = System.Text.Json.JsonSerializer.Deserialize<MacroActionConfig>(legacyJson, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(config);
+        Assert.Null(config.ForegroundPolicy);
+
+        var action = Assert.IsType<SafeAutoConfirmAction>(config.ToMacroAction());
+        Assert.Equal(ForegroundPolicy.AllowIdlePulse, action.ForegroundPolicy);
+    }
 }

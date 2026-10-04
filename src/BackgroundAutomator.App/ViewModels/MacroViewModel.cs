@@ -94,6 +94,20 @@ public sealed partial class MacroViewModel : ObservableObject
     [ObservableProperty]
     private FocusBehavior _autoConfirmFocusBehavior = FocusBehavior.FastPulse;
 
+    // Safe Auto Confirm foreground policy
+    public IReadOnlyList<ForegroundPolicy> AvailableForegroundPolicies { get; } = Enum.GetValues<ForegroundPolicy>();
+
+    [ObservableProperty]
+    private ForegroundPolicy _autoConfirmForegroundPolicy = ForegroundPolicy.AllowIdlePulse;
+
+    public bool IsIdleSettingsEnabled => AutoConfirmForegroundPolicy == ForegroundPolicy.AllowIdlePulse;
+
+    partial void OnAutoConfirmForegroundPolicyChanged(ForegroundPolicy value)
+    {
+        OnPropertyChanged(nameof(IsIdleSettingsEnabled));
+        IsDirty = true;
+    }
+
     [ObservableProperty]
     private bool _autoConfirmRespectUserFocus = true;
 
@@ -657,12 +671,13 @@ public sealed partial class MacroViewModel : ObservableObject
             focusBehavior: AutoConfirmFocusBehavior,
             policyMode: AutoConfirmPolicyMode,
             respectUserFocus: AutoConfirmRespectUserFocus,
-            userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs));
+            userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs),
+            foregroundPolicy: AutoConfirmForegroundPolicy);
 
         Actions.Add(new MacroActionItem(Actions.Count + 1, action));
         IsDirty = true;
         StatusText = $"State: IDLE | Actions: {Actions.Count}";
-        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}, {AutoConfirmFocusBehavior}, {AutoConfirmPolicyMode}] Rules count: {rules.Count}");
+        _logger.Info($"Added Macro SafeAutoConfirm: \"{ruleSet.Name}\" [{AutoConfirmExecutionMode}, {AutoConfirmWaitMode}, {AutoConfirmFocusBehavior}, {AutoConfirmForegroundPolicy}, {AutoConfirmPolicyMode}] Rules count: {rules.Count}");
     }
 
     [RelayCommand]
@@ -805,7 +820,8 @@ public sealed partial class MacroViewModel : ObservableObject
                     focusBehavior: AutoConfirmFocusBehavior,
                     policyMode: AutoConfirmPolicyMode,
                     respectUserFocus: AutoConfirmRespectUserFocus,
-                    userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs));
+                    userIdleThreshold: TimeSpan.FromMilliseconds(AutoConfirmUserIdleThresholdMs),
+                    foregroundPolicy: AutoConfirmForegroundPolicy);
                 break;
 
             default:
@@ -884,6 +900,7 @@ public sealed partial class MacroViewModel : ObservableObject
                 AutoConfirmPolicyMode = saca.PolicyMode;
                 AutoConfirmRespectUserFocus = saca.RespectUserFocus;
                 AutoConfirmUserIdleThresholdMs = (int)saca.UserIdleThreshold.TotalMilliseconds;
+                AutoConfirmForegroundPolicy = saca.ForegroundPolicy;
                 break;
         }
     }

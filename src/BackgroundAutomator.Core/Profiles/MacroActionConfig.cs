@@ -37,6 +37,7 @@ public sealed class MacroActionConfig
     public string? ApprovalPolicyMode { get; set; }
     public bool? RespectUserFocus { get; set; }
     public int? UserIdleThresholdMs { get; set; }
+    public string? ForegroundPolicy { get; set; }
 
     // SafeAutoConfirm multi-rule set property
     public ApprovalRuleSetConfig? RuleSet { get; set; }
@@ -102,6 +103,7 @@ public sealed class MacroActionConfig
                 ApprovalPolicyMode = saca.PolicyMode.ToString(),
                 RespectUserFocus = saca.RespectUserFocus,
                 UserIdleThresholdMs = (int)saca.UserIdleThreshold.TotalMilliseconds,
+                ForegroundPolicy = saca.ForegroundPolicy.ToString(),
                 TimeoutMs = (int)saca.Timeout.TotalMilliseconds,
                 PollIntervalMs = (int)saca.PollInterval.TotalMilliseconds,
                 RuleSet = new ApprovalRuleSetConfig
@@ -207,7 +209,17 @@ public sealed class MacroActionConfig
             focusBehavior: ParseFocusBehavior(FocusBehavior),
             policyMode: ParseApprovalPolicyMode(ApprovalPolicyMode),
             respectUserFocus: RespectUserFocus ?? true,
-            userIdleThreshold: TimeSpan.FromMilliseconds(clampedIdle));
+            userIdleThreshold: TimeSpan.FromMilliseconds(clampedIdle),
+            foregroundPolicy: ParseForegroundPolicy(ForegroundPolicy));
+    }
+
+    private static ForegroundPolicy ParseForegroundPolicy(string? policy)
+    {
+        if (Enum.TryParse<ForegroundPolicy>(policy, ignoreCase: true, out var result))
+        {
+            return result;
+        }
+        return Approval.ForegroundPolicy.AllowIdlePulse;
     }
 
     private static ApprovalPolicyMode ParseApprovalPolicyMode(string? mode)
