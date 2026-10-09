@@ -1000,6 +1000,12 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 revalSnapshot = promptPaneMatch.Snapshot;
                 revalDecision = promptPaneMatch.Decision;
 
+                if (revalDecision != null && !revalDecision.IsAllowed)
+                {
+                    context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
+                    return MacroActionResult.ApprovalBlocked($"Rule revalidation failed: {revalDecision.Explanation}");
+                }
+
                 // Section A6, A7, A8: Verify that the prompt pane has keyboard focus!
                 if (!activePromptPane.HasKeyboardFocus)
                 {
@@ -1069,6 +1075,13 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                             activePromptPane = candidate.Pane;
                             revalSnapshot = candidate.Snapshot;
                             revalDecision = candidate.Decision;
+
+                            if (revalDecision != null && !revalDecision.IsAllowed)
+                            {
+                                context.Logger?.Warning($"[AutoConfirm] Rule revalidation blocked: {revalDecision.BlockReason} — {revalDecision.Explanation}");
+                                return MacroActionResult.ApprovalBlocked($"Rule revalidation failed: {revalDecision.Explanation}");
+                            }
+
                             break;
                         }
                     }
@@ -1454,7 +1467,7 @@ public sealed class SafeAutoConfirmAction : IMacroAction
 
             if (PolicyMode == ApprovalPolicyMode.FoolMode)
             {
-                if (extraction.Success)
+                if (extraction.IsApprovalPromptVisible)
                 {
                     var snapshot = CommandPromptSnapshot.FromExtraction(targetHwnd, pane.RawText, extraction);
                     var decision = CommandApprovalEvaluator.Evaluate(RuleSet, snapshot, actualProc, actualClass, PolicyMode);
@@ -1469,6 +1482,15 @@ public sealed class SafeAutoConfirmAction : IMacroAction
                 {
                     matches.Add(new PromptPaneMatch(pane, snapshot, decision));
                 }
+            }
+        }
+
+        if (PolicyMode == ApprovalPolicyMode.FoolMode && matches.Count > 1)
+        {
+            var allowedMatches = matches.Where(m => m.Decision != null && m.Decision.IsAllowed).ToList();
+            if (allowedMatches.Count == 1)
+            {
+                return allowedMatches;
             }
         }
 
